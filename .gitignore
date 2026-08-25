@@ -1,0 +1,34 @@
+__pycache__/
+*.py[cod]
+captures/
+
+# Local logs and recordings (may contain device or desktop activity)
+*.log
+*.jsonl
+*.pcap
+*.pcapng
+*.cfa
+
+# Phone/ADB artifacts and screenshots
+platform-tools-latest-windows.zip
+tools/
+firmware_research/evidence/
+firmware_research/decompiled_app_fragments/
+firmware_research/*.png
+
+# Build outputs
+native_ble/bin/
+native_ble/obj/
+
+# Local IDE/runtime files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Firmware images stay local until provenance and exact hardware match are verified
+*.bin
+*.hex
+*.img
+*.fw

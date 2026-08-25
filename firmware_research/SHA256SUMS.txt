@@ -1,0 +1,2 @@
+# Reference artifact (not redistributed in this repository):
+8B8F60209BA3DDE47D803BDFC5852D951EFC91377B6EFF85CA110CC3BA4D1DDF  131757887  Qring_official_1.0.1.131.apk
