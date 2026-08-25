@@ -2,6 +2,8 @@
 
 目标 GitHub 仓库：<https://github.com/dsxksss/smart-ring>
 
+接手的 AI 必须先阅读仓库根目录 `AGENTS.md`。其中集中记录了安全红线、蓝牙互斥、残留进程处理、滚轮数据上限和禁止上传的敏感内容。
+
 本地仓库已经提交到 `main`。如果远程仍为空，在本目录执行：
 
 ```powershell
