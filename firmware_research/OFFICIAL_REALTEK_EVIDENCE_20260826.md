@@ -11,7 +11,7 @@
 
 PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖文本抽取。
 
-2026-08-27 又取得 RealMCU 提供的 `RTL8762E_SDK_v1.5.0.zip`。本地文件大小为 `123872042` 字节，SHA-256 为 `ef1f47b83d60aeb54edb83a34ecc9d92218965ab18ff02256773441d35f7db52`。SDK 本体和厂商源码不提交公开仓库；`scripts/verify_rtl8762e_sdk_v1_5_0.py` 会直接读取 ZIP、核对 9 个关键成员的大小和 SHA-256，不执行厂商程序，也不连接设备。
+2026-08-27 又取得 RealMCU 提供的 `RTL8762E_SDK_v1.5.0.zip`。本地文件大小为 `123872042` 字节，SHA-256 为 `ef1f47b83d60aeb54edb83a34ecc9d92218965ab18ff02256773441d35f7db52`。SDK 本体和厂商源码不提交公开仓库；`scripts/verify_rtl8762e_sdk_v1_5_0.py` 会直接读取 ZIP、核对 10 个顶层关键成员及内嵌 BeeMPTool 的 7 个成员，不执行厂商程序，也不连接设备。
 
 ## SDK v1.5.0 源码与 ROM 符号能证明的事项
 
@@ -43,18 +43,23 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 
 ## MP Tool User Guide 能证明的事项
 
-- PDF 第 9 页（印刷页 1）确认 UART 下载需要 `P3_1` 和 `P3_0`，RD mode 默认关闭，需要 Realtek 套件内 RegistrySet Tool 开启。
-- PDF 第 14-15 页（印刷页 6-7）列出 RD mode 的读取、Flash ID 和擦除能力；RTL8762E 的 Flash 读回是加密数据，按地址读取要求 4 KiB 对齐，单次最大 32 MiB。
-- PDF 第 51 页（印刷页 43）说明正常模式无法打开端口时，复位期间拉低 `P0_3` 可切换到 MP mode。
-- PDF 第 53 页（印刷页 45）再次确认 UART 读回要求芯片处于 MP mode；RTL8762E 不支持 `Read All`，只能按起点和长度读取加密数据。
-- PDF 第 58 页（印刷页 50）给出 RD mode 的 Flash ID 只读流程：detect、open、get flash ID。
+SDK 内嵌 `BeeMPTool_v1.1.2.1.zip` 大小为 `35509886` 字节，SHA-256 为 `57eb7cf9ce3ce7120706f7d7144d9a2cce3b4c33a0409a3784912afadbdfaec4`。其中英文 MP Tool v2.3 手册大小 `4872246` 字节，SHA-256 为 `c69ec1d66f0a22e42f2e920ba2463de047117adc2acd13b3f9a006b0add6df5f`。已视觉复核 PDF 物理页 11、16-18、20-22、63、66、69-70；该版本比此前单独下载的旧手册更新，发生冲突时以哈希锁定的新版本为当前工具证据。
+
+- 物理页 11（印刷页 1）确认量产 UART 使用 `P3_0/UART_TX` 和 `P3_1/UART_RX`；该工具包的 RD/Debug UI 默认开启。物理页 20（印刷页 10）说明开关来自 `DLL/EnableButton.switch` 的 `ID_RD_UI_SWITCH=1`，设为 `0` 才是关闭，不需要 RegistrySet Tool。
+- 物理页 63（印刷页 53）说明正常模式无法打开端口时，可在复位时拉低 `P0_3` 进入 MP mode。物理页 66（印刷页 56）进一步要求 UART 回读时芯片处于 MP mode 且 `P0_3` 保持低电平；按地址读取要求 4 KiB 对齐。
+- 同一份手册内部对单次读取上限存在冲突：物理页 17（印刷页 7）写 32 MiB，物理页 66（印刷页 56）写 16 MiB。因此在真机帮助输出和边界测试前，不把任一数字写成目标已证明上限。
+- 手册说 `Read All` 仅“部分 IC 不支持”，但没有列出 RTL8762E 是否属于不支持项；这份 v2.3 手册也没有声明 RTL8762E 回读一定是明文或密文。因此旧结论“RTL8762E 明确不支持 Read All 且回读必定加密”已撤回，必须由目标只读实测确认。
+- 物理页 69（印刷页 59）给出 Flash ID 流程：detect、open、get flash ID。物理页 16-18 同时明确 Debug 模式包含读取 Flash、Flash check、Flash ID 和 eFuse 设置；操作时必须区分只读按钮与不可逆设置。
+- `rtkmp.dll` 的导出名包含 `GetBtMPFlashSize`、`ReadBtMPFlashData`、`ReadBtMPEfuseData`；`RtkSwdMp.dll` 包含 `LoadBootstrap`、`ReadMPFlashData` 和 `ReadMPEfuseData`。这证明工具实现中存在 UART/SWD 读取路径，但没有公开稳定 ABI 或受支持 CLI，不能据此直接调用 DLL 去试探唯一戒指。
+- 内嵌 `RTL8762E_FW_B.bin` 只有 `17664` 字节，SHA-256 为 `0bb4649917a58ed3cbb8c24b19f941f7919bb3e6a83c7b9b881f373621ed1eb6`，是工具使用的目标端代理候选，不是 R08 原厂固件或设备备份。
+- MPTool、`rtkmp.dll` 和 `RtkSwdMp.dll` 均没有 Authenticode 签名。它们的来源由外层官方 SDK 哈希锁定，但本轮没有执行任何厂商 EXE/DLL。
 - 文档中的 `Backup files` 只复制当前配置的 RD 下载文件和 flash map，不会从目标芯片读取整片 Flash；它不能充当设备备份。
 
 ## 这些证据仍不能证明的事项
 
 - R08 PCB 上哪些焊盘实际连接到 `P0_3/P3_0/P3_1`，以及其电平和供电拓扑；
 - R08 外部 Flash 的 JEDEC ID、实际容量、保护状态和完整分区；
-- RTL8762E 加密读回数据能否在同一芯片上原样回写，并在应用损坏后恢复；
+- R08 的实际回读是明文还是芯片绑定密文、是否支持 `Read All`，以及所得数据能否在同一芯片上原样回写并恢复；
 - R08 当前安装 OTA Header、实际 Flash Map、bootloader 复制范围和掉电原子性；
 - 应用已经启动后发生 HardFault/死循环时是否存在自动回滚。
 
