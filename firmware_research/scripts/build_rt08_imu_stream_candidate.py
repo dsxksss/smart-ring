@@ -23,9 +23,9 @@ EXPECTED_STOCK_SHA256 = (
     "c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b"
 )
 EXPECTED_PATCH_SHA256 = (
-    "a157de7d40619ac9efa259e04473f7e7929ed2c82f9a9a77f25b2fc217a55928"
+    "0aeb8f7fd8ed84e642b38dadfa578d0185fd3aee96a55554ce2798c9a0faec0a"
 )
-EXPECTED_PATCH_SIZE = 280
+EXPECTED_PATCH_SIZE = 292
 HOOK_ADDRESS = 0x008280F6
 HOOK_ORIGINAL = bytes.fromhex("3e 70 7e 70")
 CAVE_ADDRESS = 0x00849B08
@@ -45,6 +45,7 @@ EXPECTED_LITERAL_WORDS = (
     0x008335FD,
     0x0083394F,
     0x0082AC01,
+    0x0082DCFF,
     0x0082E975,
 )
 
@@ -196,7 +197,7 @@ def build_candidate(
         "blocking_reasons": [
             "the full R08 flash map outside the two app slots has not been recovered",
             "0x00872000 is adjacent application storage, so the proven OTA slot cannot be expanded",
-            "the OTA activation call chain is proven, but ROM API names and equal-version bank selection remain unproven",
+            "the OTA activation call chain is proven, but ROM API names and OTA-bank-header update/selection remain unproven",
             "runtime-crash rollback and power-loss recovery remain unproven",
             "UART/SWD pads and byte-for-byte restore have not been proven on hardware",
             "candidate has not been validated on a sacrificial RT08_V3.1 device",

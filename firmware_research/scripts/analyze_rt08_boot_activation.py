@@ -118,16 +118,22 @@ def analyze(data: bytes) -> dict[str, Any]:
         "raw_version_format_bytes": raw_version.hex(" "),
         "raw_version_semantics_proven": False,
         "ota_end_reaches_activation_wrapper": True,
+        "activation_arguments": {
+            "image_id": f"0x{image_id:04X}",
+            "second_argument": 0,
+        },
+        "application_git_version_passed_as_activation_argument": False,
         "rom_calls_observed": ["0x00008B94", "0x00008B7A", "0x00008A5C", "0x0003ED1A"],
         "rom_api_names_proven": False,
+        "ota_bank_header_update_proven": False,
         "equal_version_bank_selection_proven": False,
         "runtime_crash_rollback_proven": False,
         "power_loss_recovery_proven": False,
         "flash_authorized": False,
         "safety_note": (
             "The stock OTA End handler reaches the checked activation chain, but "
-            "the exact ROM API semantics, equal-version bank choice, runtime-crash "
-            "rollback, and independent recovery path remain unproven."
+            "the exact ROM API semantics and OTA-bank-header update/selection, "
+            "runtime-crash rollback, and independent recovery path remain unproven."
         ),
         "anchors": checked,
     }

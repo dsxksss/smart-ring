@@ -49,6 +49,13 @@ ANCHORS = (
         "2d 49 10 b5 09 1d c8 79 40 1e 40 b2 c8 71 00 28 0a dc 00 20 "
         "c8 70 88 71 c8 71 48 78 00 21 ff f7 69 f8 25 48 f5 f7 d0 fe 10 bd",
     ),
+    (
+        "notify_wrapper_returns_zero_when_disconnected",
+        0x0082E974,
+        "70 b5 05 46 ff f7 c1 f9 00 28 12 d0 73 4c 10 22 a4 1c 60 88 "
+        "29 46 00 01 00 19 00 1d 10 f4 5a f7 60 88 7f 28 01 d3 00 20 "
+        "00 e0 40 1c 60 80 ff f7 be ff 70 bd",
+    ),
 )
 
 

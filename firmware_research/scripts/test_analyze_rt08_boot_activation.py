@@ -19,7 +19,13 @@ class BootActivationTests(unittest.TestCase):
         self.assertTrue(report["ota_end_reaches_activation_wrapper"])
         self.assertFalse(report["integrity_check_en_in_boot"])
         self.assertTrue(report["stored_sha256_all_zero"])
+        self.assertEqual(
+            report["activation_arguments"],
+            {"image_id": "0x2793", "second_argument": 0},
+        )
+        self.assertFalse(report["application_git_version_passed_as_activation_argument"])
         self.assertFalse(report["rom_api_names_proven"])
+        self.assertFalse(report["ota_bank_header_update_proven"])
         self.assertFalse(report["equal_version_bank_selection_proven"])
         self.assertFalse(report["runtime_crash_rollback_proven"])
         self.assertFalse(report["power_loss_recovery_proven"])

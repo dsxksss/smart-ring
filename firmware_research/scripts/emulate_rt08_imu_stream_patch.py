@@ -22,7 +22,7 @@ PATCH_BASE = 0x00849B08
 CONTROL_ENTRY = PATCH_BASE
 STOP_ENTRY = 0x00849B54
 TICK_ENTRY = 0x00849B74
-PATCH_SHA256 = "a157de7d40619ac9efa259e04473f7e7929ed2c82f9a9a77f25b2fc217a55928"
+PATCH_SHA256 = "0aeb8f7fd8ed84e642b38dadfa578d0185fd3aee96a55554ce2798c9a0faec0a"
 
 A1_STATE = 0x00209CB8
 A1_TIMER = 0x00209CC8
@@ -39,6 +39,7 @@ FN_FIFO_STOP = 0x00832CBC
 FN_SENSOR_STANDBY = 0x008335FC
 FN_RING_LATEST = 0x0083394E
 FN_CHECKSUM = 0x0082AC00
+FN_CONNECTED = 0x0082DCFE
 FN_NOTIFY = 0x0082E974
 
 
@@ -60,6 +61,7 @@ def _load_unicorn() -> tuple[Any, Any]:
 @dataclass
 class StubState:
     timer_start_result: int = 1
+    connected: bool = True
     ring_fresh: bool = True
     xyz: tuple[int, int, int] = (-321, 654, -987)
     calls: list[str] = field(default_factory=list)
@@ -95,6 +97,9 @@ class PatchEmulator:
             FN_SENSOR_STANDBY: lambda: self._record_and_return("sensor_standby"),
             FN_RING_LATEST: self._stub_ring_latest,
             FN_CHECKSUM: self._stub_checksum,
+            FN_CONNECTED: lambda: self._record_and_return(
+                "connected", int(self.state.connected)
+            ),
             FN_NOTIFY: self._stub_notify,
         }
         self.uc.hook_add(unicorn.UC_HOOK_CODE, self._on_code)
@@ -160,7 +165,7 @@ class PatchEmulator:
     def _stub_notify(self) -> None:
         self.state.calls.append("notify")
         self.state.notifications.append(bytes(self.uc.mem_read(self._reg("r0"), 16)))
-        self._return_from_stub(1)
+        self._return_from_stub(0)
 
     def _on_code(self, _uc: Any, address: int, _size: int, _user_data: Any) -> None:
         normalized = address & ~1
@@ -269,7 +274,7 @@ def validate_patch(patch: bytes) -> dict[str, Any]:
     fresh.write_u16(A1_STATE + 4, 0x0030)
     fresh.write_u16(RING_STATE + 8, 0x0030)
     fresh.run(TICK_ENTRY)
-    assert fresh.state.calls == ["ring_latest", "checksum", "notify"]
+    assert fresh.state.calls == ["connected", "ring_latest", "checksum", "notify"]
     assert fresh.read_u16(RING_STATE + 8) == 0x0036
     assert fresh.read_u16(A1_STATE + 4) == 0x0036
     assert fresh.read_u8(A1_STATE + 2) == 8
@@ -321,6 +326,21 @@ def validate_patch(patch: bytes) -> dict[str, Any]:
     assert stopped.read_u8(RING_STATE + 1) == 0
     assert stopped.state.calls[:3] == ["timer_stop", "fifo_stop", "sensor_standby"]
     passed.append("explicit_stop_is_complete_and_idempotent")
+
+    disconnected = PatchEmulator(patch, StubState(connected=False))
+    disconnected.write_u8(A1_STATE, 9)
+    disconnected.write_u8(RING_STATE + 1, 1)
+    disconnected.run(TICK_ENTRY)
+    assert disconnected.state.notifications == []
+    assert disconnected.read_u32(A1_STATE) == 0
+    assert disconnected.read_u8(RING_STATE + 1) == 0
+    assert disconnected.state.calls == [
+        "connected",
+        "timer_stop",
+        "fifo_stop",
+        "sensor_standby",
+    ]
+    passed.append("disconnect_immediately_stops_before_fifo_or_notify")
 
     inactive = PatchEmulator(patch)
     inactive.run(TICK_ENTRY)

@@ -72,11 +72,11 @@ address     = 0x00826000 + (file_offset - 0x50)
 
 这些描述符证明应用会管理或引用 OTA 槽之后的大部分地址空间，并把观察到的最高末端推进到 `0x00880000`；`0x0087A000..0x0087B000` 仍未分类。RTL8762E 官方产品线存在 512 KiB 和 1 MiB Flash 变体，因此在 MP/UART 只读取得 Flash ID 前，不能仅凭最高引用地址宣布物理容量就是 512 KiB，也不能给这些区域擅自命名。`analyze_rt08_ota_path.py` 会验证全部 23 个 OTA、相邻存储与描述符锚点并固定报告 `physical_flash_capacity_proven=false`。
 
-Realtek 官方 SDK 说明双 bank 启动时会先检查版本较高的应用；若认证/解密失败，再检查另一 bank。它没有证明两个应用版本完全相同时选择哪一槽，也没有证明“头部结构有效但进入应用后崩溃”会触发自动回滚。当前候选刻意保留原厂版本字段，因此同版本选择规则是硬阻塞项，不能通过猜测提高未知版本字节来绕开。
+Realtek 官方 SDK 说明双 bank 启动时会先检查版本较高的应用；若认证/解密失败，再检查另一 bank。官方相邻系列 RTL8762C OTA 手册进一步说明，每个 bank 有独立 4 KiB OTA Header，其中保存 bank 版本、各镜像地址和大小；只有 OTA Header 版本高于当前 bank 才被视为可切换的新 bank。该资料不是目标 RTL8762E ROM 的精确实现证明，却说明应用镜像头的 `git_ver` 与 bank 选择版本不能混为一谈，也没有证明“头部结构有效但进入应用后崩溃”会自动回滚。
 
-`scripts/analyze_rt08_boot_activation.py` 已把原厂 OTA End 与应用内激活链固定为 6 组精确字节锚点：OTA End 以 `0x2793` 调用 `0x00826F2A`，后者可到达 ROM `0x00008B94`、`0x00008B7A`、`0x00008A5C`，成功分支再经 `0x00826F16` 调用 ROM `0x0003ED1A`。报告同时锁定 control flags `0x0981`、零 SHA 字段及头偏移 `0x60` 的原始 8 字节版本结构 `41 10 00 00 9e a3 01 12`。尚无授权 SDK 符号能可靠命名这些 ROM API，也不能从这 8 字节猜测版本语义；分析器因此固定输出同版本选择、运行时回滚、掉电恢复和刷写授权均为 `false`。
+`scripts/analyze_rt08_boot_activation.py` 已把原厂 OTA End 与应用内激活链固定为 6 组精确字节锚点：OTA End 以参数 `(image_id=0x2793, second_argument=0)` 调用 `0x00826F2A`，后者可到达 ROM `0x00008B94`、`0x00008B7A`、`0x00008A5C`，成功分支再经 `0x00826F16` 调用 ROM `0x0003ED1A`。报告同时锁定 control flags `0x0981`、零 SHA 字段及头偏移 `0x60` 的原始 8 字节版本结构 `41 10 00 00 9e a3 01 12`；这些 `git_ver` 字节并未直接作为激活参数传入。尚无授权 SDK 符号能可靠命名这些 ROM API，也未证明 ROM 如何更新或选择独立 OTA Bank Header；分析器因此固定输出 OTA Bank Header 更新、bank 选择、运行时回滚、掉电恢复和刷写授权均为 `false`。
 
-官方 RTL8762E SDK User Guide 的双 bank 图文只定义“先检查版本更高的 bank”，没有定义版本完全相同时的选择规则。官方相邻系列 iOS OTA 工具文档还明确提示：没有镜像高于当前版本时不会切换 bank。这不能单独证明 R08 所用 ROM 的精确实现，却进一步说明“保留同版本号”不是可验证的激活方案；在取得 RTL8762E SDK 中 `T_VERSION_FORMAT` 定义、ROM 符号和实际 OTA Header 前，不修改那 8 个未知版本字节。
+因此，当前激活阻塞项不再简化表述为“应用 `git_ver` 同版本所以不会切换”，而是：R08 的 ROM 激活 API 参数和 OTA Bank Header 更新/选择语义尚未证明。取得 RTL8762E SDK 中对应 ROM 符号、OTA Header 定义和可复现实验前，不修改应用头那 8 个未知版本字节，也不把候选写入唯一设备。
 
 ## 不依赖应用固件的恢复入口
 
@@ -103,7 +103,7 @@ MP Tool 文档还确认 RD mode 默认关闭，需 Realtek 套件内的 Registry
 - [ ] 在不擦除的情况下稳定进入 MP 模式并读出芯片/Flash 身份；
 - [ ] 明确整片 Flash 分区、系统配置、OTA Header、应用、持久化存储后续区域和 Bootloader 范围；
 - [x] 已静态确认活动应用 `0x00826000`、非活动槽 `0x0084E000..0x00872000` 和 QRing 接收端写入上限；
-- [ ] 确认同版本双 bank 选择、not-ready/not-obsolete 更新和运行时失败回滚语义；
+- [ ] 确认 OTA Bank Header 更新/选择、not-ready/not-obsolete 更新和运行时失败回滚语义；
 - [ ] 连续读回两次，逐字节一致，分别保存到两个独立介质并记录 SHA-256；
 - [ ] 证明加密读回数据的原样回写语义，或取得官方可重建的全部分区镜像；
 - [ ] 在第二枚同硬件设备或等价 RTL8762E 测试板上演练擦除、失败启动、恢复、回滚；
@@ -116,6 +116,7 @@ MP Tool 文档还确认 RD mode 默认关闭，需 Realtek 套件内的 Registry
 ## 官方资料
 
 - Realtek RTL87x2G SDK User Guide（包含应用镜像头格式）：<https://www.realmcu.com/img/ipb/en_638358166065142992.pdf>
+- Realtek RTL8762C OTA User Manual（仅作相邻系列 OTA Header 结构证据）：<https://www.realmcu.com/img/ipd/en_638290111802009694.pdf>
 - Realtek MP Tool User Guide（UART 进入、下载与读回）：<https://www.realmcu.com/img/ipd/en_638115612700983899.pdf>
 - Realtek Hardware Instruction：<https://www.realmcu.com/img/ipg/en_638357619405474080.pdf>
 - FCC R08 Internal Photos：<https://fccid.io/2AOM3-R08/Internal-Photos/Internal-photos-7833424.pdf>

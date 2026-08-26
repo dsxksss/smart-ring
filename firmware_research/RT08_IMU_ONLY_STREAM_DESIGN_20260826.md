@@ -83,7 +83,7 @@ A2 10 ... checksum         IMU-only 通知
 
 1. 启动或最后一次续期后达到 12 秒硬超时；
 2. 收到 `IMU_STREAM_STOP`；
-3. BLE 断开或连续通知失败；
+3. BLE 断开（固件每个 tick 显式检查）；主机连续 250 ms 收不到有效通知时也会 fail-closed 并停止注入；
 4. FIFO/环形缓冲在限定时间内没有新样本；
 5. 配置或读取函数返回失败；
 6. 固件进入充电、关机、升级或原厂测量状态。
@@ -128,10 +128,10 @@ python firmware_research\scripts\verify_rt08_imu_stream_anchors.py research_arti
 - Windows 解码、序号跳变、stale、反向和停止延迟测试；
 - `flashAuthorized=false`。在恢复路径验证前，候选文件必须明确标记为不可刷。
 
-当前经逐指令复核的 patch 对象为 280 字节，SHA-256：
+当前经逐指令复核的 patch 对象为 292 字节，SHA-256：
 
 ```text
-a157de7d40619ac9efa259e04473f7e7929ed2c82f9a9a77f25b2fc217a55928
+0aeb8f7fd8ed84e642b38dadfa578d0185fd3aee96a55554ce2798c9a0faec0a
 ```
 
-它占用 `0x00849B08..0x00849C20`，尾部仍有 16 个零字节；离线候选整包 SHA-256 为 `700b362eda53135e2913c81c1a2d9e26c637d0ffa496508a5a92fdcc1ad65986`。这两个哈希用于复现与审计，不表示允许刷写。
+它占用 `0x00849B08..0x00849C2C`，尾部仍有 4 个零字节；离线候选整包 SHA-256 为 `d55458692d51ff4d21d385e61dfba34c8296934944fe3ad493f0dc07744ec1ac`。这两个哈希用于复现与审计，不表示允许刷写。callback 每个 tick 直接调用已定位的原厂连接检查函数，断连时会在读取 FIFO 和发送通知前进入统一停流路径，不等待 12 秒硬超时；未知的通知包装器返回语义不参与安全判断。

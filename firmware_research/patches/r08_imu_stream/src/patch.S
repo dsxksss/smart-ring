@@ -104,6 +104,12 @@ r08_stream_tick:
     cmp  r0, #9
     bne  .Ltick_done
 
+    /* Fail closed before touching the FIFO when the NUS link is gone. */
+    ldr  r7, .Lfn_connected
+    blx  r7
+    cmp  r0, #0
+    beq  .Lhard_stop
+
     /* Zero the packet first so a temporarily empty FIFO produces safe zeros. */
     movs r0, #0
     str  r0, [sp, #0]
@@ -187,6 +193,7 @@ r08_stream_tick:
 .Lfn_sensor_standby:  .word 0x008335FD
 .Lfn_ring_latest:     .word 0x0083394F
 .Lfn_checksum:        .word 0x0082AC01
+.Lfn_connected:       .word 0x0082DCFF
 .Lfn_notify:          .word 0x0082E975
 
 .size r08_custom_control, . - r08_custom_control

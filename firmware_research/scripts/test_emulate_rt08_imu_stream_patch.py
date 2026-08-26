@@ -21,7 +21,7 @@ PATCH = (
 class ImuStreamPatchEmulationTests(unittest.TestCase):
     def test_all_safety_scenarios(self) -> None:
         report = validate_patch(PATCH.read_bytes())
-        self.assertEqual(report["scenario_count"], 8)
+        self.assertEqual(report["scenario_count"], 9)
         self.assertFalse(report["flash_allowed"])
 
 

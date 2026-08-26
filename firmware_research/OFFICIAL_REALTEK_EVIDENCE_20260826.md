@@ -19,6 +19,10 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 - 手册没有展开 `T_VERSION_FORMAT` 字段定义，因此 R08 头偏移 `0x60` 的 `41 10 00 00 9e a3 01 12` 仍不得当作普通版本号递增。
 - SDK 文档说明 `P0_3` 默认用作应用日志 UART。这与 MP mode trap 使用同一引脚并不矛盾，但意味着 PCB 测试点必须结合复位时序和走线确认。
 
+## 相邻系列 OTA Header 证据
+
+RealMCU 官方 RTL8762C OTA User Manual：`https://www.realmcu.com/img/ipd/en_638290111802009694.pdf`。该手册说明每个 bank 具有独立 4 KiB OTA Header，包含 bank 版本以及各镜像地址和大小；新 bank 的 OTA Header 版本需高于当前 bank 才有效。它只用于区分“应用镜像头 `git_ver`”与“OTA Bank Header 版本”这两个概念，不能替代 RTL8762E SDK/ROM 的精确语义，也不能证明 R08 会如何更新或选择 Bank Header。
+
 ## MP Tool User Guide 能证明的事项
 
 - PDF 第 9 页（印刷页 1）确认 UART 下载需要 `P3_1` 和 `P3_0`，RD mode 默认关闭，需要 Realtek 套件内 RegistrySet Tool 开启。
@@ -33,7 +37,7 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 - R08 PCB 上哪些焊盘实际连接到 `P0_3/P3_0/P3_1`，以及其电平和供电拓扑；
 - R08 外部 Flash 的 JEDEC ID、实际容量、保护状态和完整分区；
 - RTL8762E 加密读回数据能否在同一芯片上原样回写，并在应用损坏后恢复；
-- 同版本双 bank 的选择规则、掉电原子性和应用运行时故障回滚；
+- R08 的 OTA Bank Header 更新/选择规则、掉电原子性和应用运行时故障回滚；
 - ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A` 的精确符号和参数语义。
 
 因此这些官方资料加强了恢复设计，但不改变候选的 `NON_FLASHABLE` / `flash_allowed=false` 状态。

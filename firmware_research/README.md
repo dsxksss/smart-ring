@@ -105,14 +105,14 @@ APK 本身不内置固件 `.bin`。
 2. 已区分 LIS3DH 的两组配置：活动采样窗口的 FIFO stream 路径为 `CTRL_REG1=0x37`（25 Hz），待机 INT1 动作/唤醒检测路径才使用 `0x47`（50 Hz）；已定位最多 32 样本的 FIFO 批读、RAM 环形缓冲、每个 XYZ 前进 6 字节的 16 位生产者计数，以及 `A1 01..05` 约 1 秒打包定时器；
 3. 已确认加速度判定函数 `0x00831A7C` 能调用 `0x0082B408(2)` 生成真机观察到的 `02 02 00 ... 04` 通知，随后以 `3000` 重启 `gsensor_shake_flag_timer_id` 做门控/冷却；该包至少存在一条 IMU/敲击生成路径，不应只标成触控区按钮事件；
 4. 已静态确认原厂 OTA 写入非活动应用槽 `0x0084E000..0x00872000`、容量 `0x24000`、擦除粒度 `0x1000`；`0x00872000` 正好是原厂持久化存储起点，已观察到至少两个 4 KiB 页，另有 10 个应用 Flash 区域描述符延伸到 `0x00880000`（`0x0087A000..0x0087B000` 未分类），因此不能越界扩容；物理 Flash 容量仍需只读 Flash ID 证明；
-5. 已用 `analyze_rt08_boot_activation.py` 锁定 OTA End 到 `0x00826F2A`、再到 ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A` 的 6 组精确指令锚点；这只证明激活调用链存在，尚未证明 ROM API 名称、同版本 bank 选择、运行时崩溃回滚或掉电恢复；
+5. 已用 `analyze_rt08_boot_activation.py` 锁定 OTA End 到 `0x00826F2A`、再到 ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A` 的 6 组精确指令锚点；OTA End 参数为 `(image_id=0x2793, second_argument=0)`，应用头 `git_ver` 并未直接作为激活参数；尚未证明 ROM API 名称、OTA Bank Header 更新/选择、运行时崩溃回滚或掉电恢复；
 6. 用户确定只使用当前唯一的一枚戒指，因此在独立恢复路径得到验证前只做离线候选镜像，不刷写实验固件。
 
 更完整的跨电脑交接顺序见仓库根目录 `NEXT_AI_HANDOFF.md`；可迁移的二进制资料、工具、分卷恢复方式和校验值见 `research_artifacts/README.md`。
 
-IMU 连续滚动的独立通知协议、12 秒固件硬超时、8 秒主机续期和安全停止条件见 `RT08_IMU_ONLY_STREAM_DESIGN_20260826.md`。已实现 280 字节离线 patch 对象和显式 `imu-stream` 主机命令，但候选仍是 `NON_FLASHABLE`，不是可刷固件授权。
+IMU 连续滚动的独立通知协议、12 秒固件硬超时、8 秒主机续期和安全停止条件见 `RT08_IMU_ONLY_STREAM_DESIGN_20260826.md`。已实现 292 字节离线 patch 对象和显式 `imu-stream` 主机命令，但候选仍是 `NON_FLASHABLE`，不是可刷固件授权。
 
-补丁机器码已在 ARMv6-M Thumb 仿真中通过 8 个启动、通知、陈旧数据和停止场景；原厂 `0x0083394E` 消费路径会在启用标志置位后先调用 `0x00832F9C` 排空 LIS3DH FIFO，目标固件也存在 timer callback 内停止同一 timer 的原厂路径。2026-08-26 完整回归为 39 个 Python 测试、59 个 Rust 库测试和 1 个 Rust 主程序测试，Release 构建成功。候选对象仍为 280 字节、哈希未变；这些结果不证明真实 RTOS 时序、功耗、bank 激活或硬件恢复，详见 `RT08_TIMER_AND_PATCH_EMULATION_20260826.md`。
+补丁机器码已在 ARMv6-M Thumb 仿真中通过 9 个启动、通知、断连、陈旧数据和停止场景；原厂 `0x0083394E` 消费路径会在启用标志置位后先调用 `0x00832F9C` 排空 LIS3DH FIFO，目标固件也存在 timer callback 内停止同一 timer 的原厂路径。原厂通知包装器的连接检查也已加入精确锚点，补丁每个 tick 直接检查连接，断连时在读取 FIFO 和通知前立即停流。2026-08-26 完整回归为 39 个 Python 测试、59 个 Rust 库测试和 1 个 Rust 主程序测试，Release 构建成功。当前对象为 292 字节；这些结果不证明真实 RTOS 时序、功耗、bank 激活或硬件恢复，详见 `RT08_TIMER_AND_PATCH_EMULATION_20260826.md`。
 
 关键固件地址可用 `scripts/verify_rt08_imu_stream_anchors.py` 对官方镜像做只读复核。Rust 端的 `imu-stream` 子命令会核对精确硬件/固件身份，默认只监听；只有同时显式确认未验证候选并传入 `--inject` 才会注入滚轮。它不会刷写固件，原厂固件也不会响应该候选命令。
 
