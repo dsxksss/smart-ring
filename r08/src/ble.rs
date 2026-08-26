@@ -10,7 +10,9 @@ use futures::{Stream, StreamExt};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::identity::{is_ring_advertisement, RING_MAC, RING_NAME};
+#[cfg(windows)]
+use crate::identity::RING_MAC;
+use crate::identity::{is_ring_advertisement, RING_NAME};
 use crate::protocol::{
     format_packet, is_dfu_uuid, reject_if_dfu, DIS_SERVICE, NORDIC_UART_NOTIFY, NORDIC_UART_WRITE,
 };
@@ -85,7 +87,10 @@ pub async fn connect_fresh(scan_seconds: u64) -> Result<RingConnection> {
     connect_with_options(scan_seconds, false).await
 }
 
-async fn connect_with_options(scan_seconds: u64, allow_win32: bool) -> Result<RingConnection> {
+async fn connect_with_options(
+    scan_seconds: u64,
+    #[cfg_attr(not(windows), allow(unused_variables))] allow_win32: bool,
+) -> Result<RingConnection> {
     #[cfg(windows)]
     if allow_win32 {
         match crate::platform::windows_gatt_win32::WindowsGattWin32Connection::connect_known().await
@@ -240,49 +245,15 @@ impl RingConnection {
     }
 
     pub async fn read_device_information(&self) -> Result<Vec<(String, String)>> {
-        let RingBackend::Btleplug { peripheral, .. } = &self.backend else {
-            #[cfg(windows)]
-            if let RingBackend::WindowsNative(connection) = &self.backend {
-                return connection.read_device_information().await;
+        match &self.backend {
+            RingBackend::Btleplug { peripheral, .. } => {
+                read_btleplug_device_information(peripheral).await
             }
             #[cfg(windows)]
-            if let RingBackend::WindowsWin32(connection) = &self.backend {
-                return connection.read_device_information().await;
-            }
-            unreachable!("当前平台只存在 btleplug 蓝牙后端");
-        };
-        let mut rows = Vec::new();
-        for characteristic in peripheral.characteristics() {
-            if is_dfu_uuid(characteristic.uuid) {
-                continue;
-            }
-            let Some(label) = dis_label(characteristic.uuid) else {
-                continue;
-            };
-            match peripheral.read(&characteristic).await {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes)
-                        .trim_end_matches('\0')
-                        .to_string();
-                    let printable = !text.is_empty() && text.chars().all(|ch| !ch.is_control());
-                    rows.push((
-                        label.to_string(),
-                        if printable {
-                            format!("{}  [HEX {}]", text, format_packet(&bytes))
-                        } else {
-                            format!("<二进制>  [HEX {}]", format_packet(&bytes))
-                        },
-                    ));
-                }
-                Err(error) => rows.push((label.to_string(), format!("读取失败：{error}"))),
-            }
+            RingBackend::WindowsNative(connection) => connection.read_device_information().await,
+            #[cfg(windows)]
+            RingBackend::WindowsWin32(connection) => connection.read_device_information().await,
         }
-        for service in peripheral.services() {
-            if service.uuid == DIS_SERVICE {
-                tracing::info!("DEVICE_INFO_READ_ONLY 发现标准设备信息服务");
-            }
-        }
-        Ok(rows)
     }
 
     pub async fn disconnect(&self) -> Result<()> {
@@ -300,6 +271,43 @@ impl RingConnection {
             RingBackend::WindowsWin32(connection) => connection.disconnect().await,
         }
     }
+}
+
+async fn read_btleplug_device_information(
+    peripheral: &Peripheral,
+) -> Result<Vec<(String, String)>> {
+    let mut rows = Vec::new();
+    for characteristic in peripheral.characteristics() {
+        if is_dfu_uuid(characteristic.uuid) {
+            continue;
+        }
+        let Some(label) = dis_label(characteristic.uuid) else {
+            continue;
+        };
+        match peripheral.read(&characteristic).await {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes)
+                    .trim_end_matches('\0')
+                    .to_string();
+                let printable = !text.is_empty() && text.chars().all(|ch| !ch.is_control());
+                rows.push((
+                    label.to_string(),
+                    if printable {
+                        format!("{}  [HEX {}]", text, format_packet(&bytes))
+                    } else {
+                        format!("<二进制>  [HEX {}]", format_packet(&bytes))
+                    },
+                ));
+            }
+            Err(error) => rows.push((label.to_string(), format!("读取失败：{error}"))),
+        }
+    }
+    for service in peripheral.services() {
+        if service.uuid == DIS_SERVICE {
+            tracing::info!("DEVICE_INFO_READ_ONLY 发现标准设备信息服务");
+        }
+    }
+    Ok(rows)
 }
 
 fn dis_label(uuid: Uuid) -> Option<&'static str> {

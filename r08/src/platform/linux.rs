@@ -90,21 +90,19 @@ fn hid_loop(tx: Sender<HidMouseEvent>, shutdown: mpsc::Receiver<()>) {
                                 button_data = event.value() as i16;
                                 pending = true;
                             }
-                            InputEventKind::Synchronization(_) => {
-                                if pending {
-                                    let _ = tx.send(HidMouseEvent {
-                                        is_ring: true,
-                                        button_flags: flags,
-                                        button_data,
-                                        dx,
-                                        dy,
-                                    });
-                                    dx = 0;
-                                    dy = 0;
-                                    flags = 0;
-                                    button_data = 0;
-                                    pending = false;
-                                }
+                            InputEventKind::Synchronization(_) if pending => {
+                                let _ = tx.send(HidMouseEvent {
+                                    is_ring: true,
+                                    button_flags: flags,
+                                    button_data,
+                                    dx,
+                                    dy,
+                                });
+                                dx = 0;
+                                dy = 0;
+                                flags = 0;
+                                button_data = 0;
+                                pending = false;
                             }
                             _ => {}
                         }
