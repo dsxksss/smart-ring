@@ -20,8 +20,10 @@ KNOWN_HEADER_SIZE = 0x50
 REALTEK_IMAGE_HEADER_SIZE = 0x400
 RTL8762E_IC_TYPE = 12
 RTL8762E_APPLICATION_BASE = 0x00826000
-# T_IMG_HEADER_FORMAT is 1024 bytes and ends with sha256[32], rsvd2[76].
-RTL8762E_SHA256_OFFSET = REALTEK_IMAGE_HEADER_SIZE - 76 - 32
+# RTL8762E SDK v1.5.0 T_IMG_HEADER_FORMAT places sha256[32] immediately
+# after the 260-byte RSA public key, at offset 0x174.  The remaining bytes in
+# the 0x400-byte image header include reserved/authentication material.
+RTL8762E_SHA256_OFFSET = 0x174
 RTL8762E_SOURCE_MARKERS = (
     b"qc_code\\app_module\\gsensor\\lis3dh_spi.c",
     b"Error! Please implement your ISR Handler",
@@ -165,8 +167,9 @@ def inspect_rtl8762e_application(data: bytes) -> dict[str, Any]:
         "sha256_all_zero": not any(stored_sha256),
         "note": (
             "The outer QRing wrapper contains an RTL8762E-style 1024-byte application "
-            "header. The official trailing SHA-256 field is at header offset 0x394; "
-            "this stock image leaves it zero while boot integrity checking is disabled."
+            "header. RTL8762E SDK v1.5.0 places sha256[32] at header offset 0x174. "
+            "The vendor prepend_header tool may hash authenticated image material rather "
+            "than the raw body alone, so body_sha256_matches is diagnostic only."
         ),
     }
 

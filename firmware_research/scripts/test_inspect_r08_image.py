@@ -81,7 +81,7 @@ class InspectorTests(unittest.TestCase):
         self.assertTrue(report["offline_patch_candidate"])
         self.assertFalse(report["flash_authorized"])
 
-    def test_reads_sha256_from_official_trailing_header_field(self) -> None:
+    def test_reads_sha256_from_official_header_field(self) -> None:
         data = bytearray(synthetic_rtl8762e_application())
         payload_offset = KNOWN_HEADER_SIZE
         body = data[payload_offset + REALTEK_IMAGE_HEADER_SIZE :]

@@ -16,9 +16,16 @@ from analyze_rt08_ota_path import (  # noqa: E402
 from analyze_rt08_thumb import address_to_file_offset, load_image  # noqa: E402
 
 
-STOCK = REPO_ROOT / "research_artifacts" / "firmware" / "RT08_3.10.48_260309.bin"
+STOCK = (
+    REPO_ROOT
+    / "firmware_research"
+    / "evidence"
+    / "ota"
+    / "RT08_3.10.48_260309.bin"
+)
 
 
+@unittest.skipUnless(STOCK.exists(), "exact stock image not present locally")
 class OtaPathTests(unittest.TestCase):
     def test_exact_stock_path_and_capacity(self):
         report = analyze(load_image(STOCK))

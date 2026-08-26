@@ -5,5 +5,6 @@ pub mod mapping;
 pub mod ota;
 pub mod platform;
 pub mod protocol;
+pub mod sacrificial_dfu;
 pub mod sensor;
 pub mod session;

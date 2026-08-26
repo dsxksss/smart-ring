@@ -22,7 +22,7 @@ PATCH_BASE = 0x00849B08
 CONTROL_ENTRY = PATCH_BASE
 STOP_ENTRY = 0x00849B54
 TICK_ENTRY = 0x00849B74
-PATCH_SHA256 = "0aeb8f7fd8ed84e642b38dadfa578d0185fd3aee96a55554ce2798c9a0faec0a"
+PATCH_SHA256 = "736ceb0f70b186c487dc816ced7f637cf9ae4c7b1d4e1d34bd931a1300ebcbd5"
 
 A1_STATE = 0x00209CB8
 A1_TIMER = 0x00209CC8
@@ -244,7 +244,7 @@ def validate_patch(patch: bytes) -> dict[str, Any]:
     failed.write_u32(A1_STATE, 0xFFFFFFFF)
     failed.write_u32(A1_STATE + 4, 0xFFFFFFFF)
     failed.run_control(1)
-    assert failed.state.epilogue_status == 0xFF
+    assert failed.state.epilogue_status == 0xFE
     assert failed.read_u8(A1_STATE) == 0
     assert "timer_start" in failed.state.calls
     assert "sensor_25hz" not in failed.state.calls
@@ -255,7 +255,7 @@ def validate_patch(patch: bytes) -> dict[str, Any]:
     started.write_u16(RING_STATE + 8, 0x012C)
     started.run_control(1)
     assert started.state.timer_start_args == (A1_TIMER, TICK_ENTRY | 1, 100, 1)
-    assert started.state.epilogue_status == 0xFF
+    assert started.state.epilogue_status == 0xFE
     assert started.state.calls[:4] == [
         "timer_stop",
         "fifo_stop",

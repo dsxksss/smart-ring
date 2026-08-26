@@ -58,9 +58,9 @@ enum Command {
     },
     /// Send only the known A1 02 raw-sensor stop packet. Never sends DFU.
     SensorStop,
-    /// Exercise the offline candidate's A2/10 IMU stream. Does not flash firmware.
+    /// Use the installed v7 A2/10 IMU stream. Does not flash firmware.
     ImuStream {
-        /// Required safety acknowledgement; stock firmware does not implement A1 09.
+        /// Required acknowledgement; stock firmware does not implement A1 09.
         #[arg(long)]
         acknowledge_unverified_candidate: bool,
         /// Actually inject wheel events. Omit for listen/calibration-only mode.
@@ -247,7 +247,7 @@ async fn main() -> Result<()> {
             .validate()?;
             println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
             println!("该命令不会刷写固件；将发送候选 A1 09 启停命令，任何异常均急停。按 Enter 或 Ctrl+C 退出。");
-            let connection = ble::connect_fresh(30).await?;
+            let connection = ble::connect(30).await?;
             imu_scroll::run(
                 connection,
                 ImuStreamOptions {
@@ -374,7 +374,7 @@ async fn self_check() -> Result<()> {
     println!("inject_default=double-tap-gated");
     println!("dfu_writes=blocked");
     println!("target_name={RING_NAME}");
-    println!("firmware_stock_image=present-local");
+    println!("firmware_images=not-bundled");
     println!("firmware_recovery_path=not-verified");
     for note in caps.notes {
         println!("note={note}");

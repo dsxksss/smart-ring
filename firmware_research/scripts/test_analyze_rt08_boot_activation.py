@@ -10,15 +10,27 @@ from analyze_rt08_boot_activation import analyze  # noqa: E402
 from analyze_rt08_thumb import address_to_file_offset, load_image  # noqa: E402
 
 
-STOCK = REPO_ROOT / "research_artifacts" / "firmware" / "RT08_3.10.48_260309.bin"
+STOCK = (
+    REPO_ROOT
+    / "firmware_research"
+    / "evidence"
+    / "ota"
+    / "RT08_3.10.48_260309.bin"
+)
 
 
+@unittest.skipUnless(STOCK.exists(), "exact stock image not present locally")
 class BootActivationTests(unittest.TestCase):
     def test_exact_stock_activation_path_remains_non_flashable(self):
         report = analyze(load_image(STOCK))
         self.assertTrue(report["ota_end_reaches_activation_wrapper"])
         self.assertFalse(report["integrity_check_en_in_boot"])
-        self.assertTrue(report["stored_sha256_all_zero"])
+        self.assertFalse(report["stored_sha256_all_zero"])
+        self.assertEqual(report["stored_sha256_offset"], "0x174")
+        self.assertEqual(
+            report["stored_sha256"],
+            "3e143d383a69b749ed928345ac04d517d7aefb95ecc0f2f4eafbe9fd9b146f8f",
+        )
         self.assertEqual(
             report["downloaded_payload_type"],
             "single_rtl8762e_application_image",

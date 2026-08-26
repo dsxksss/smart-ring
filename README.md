@@ -1,193 +1,93 @@
-# 智能戒指 BLE 动作检测器
+# R08 智能戒指控制器
 
-跨平台控制器是 Rust 程序 `r08`，支持 **Windows、Linux、macOS**。旧的 Python GUI 和 C# `R08NativeCli` 仍保留为 Windows 遗留工具，新的开发与 CI 以 Rust 为准。
+目标设备：`R08_9C07`（`RT08_V3.1`）。当前戒指已经安装 v7 IMU 连续流固件，Windows 主机可把戒指转动转换为连续滚轮；原有触控模式仍可用于上下滑、双击复制和三击粘贴。
 
-换电脑继续固件研究，请先阅读 [`NEXT_AI_HANDOFF.md`](NEXT_AI_HANDOFF.md)。可迁移的固件、APK/反编译分卷、脱敏传感器数据和分析工具见 [`research_artifacts/README.md`](research_artifacts/README.md)。
+## 快速使用
 
-## 跨平台 Rust 控制器（推荐）
+使用前完全退出手机 QRing App，并关闭手机蓝牙，避免抢占 BLE 连接。
 
-需要 Rust 1.85+（<https://rustup.rs>）。Linux 编译还需要 `libdbus-1-dev` 和 `pkg-config`。
+Windows 连续姿态滚轮：
 
-```bash
-cargo test --workspace
-cargo build -p r08 --release
-./target/release/r08 self-check
+```text
+双击 scripts\start_r08_imu_scroll.bat
 ```
 
-`self-check` 不连接戒指，只报告当前操作系统的 BLE/HID/注入后端是否可用。云环境或无蓝牙电脑上显示 `ble_adapter=not-found` 是正常的。
+启动后保持戒指静止约 1 秒完成零点校准，再转动戒指滚动。默认实测参数为 `gain=0.2`、`full-speed=60`。按 Enter 或 `Ctrl+C` 会发送停止命令、释放输入并退出。
 
-推荐直接启动。省略子命令时，程序会配置戒指触控并进入待机，不再要求输入数字选项：
+原有触控控制（上下滑滚轮、双击复制、三击粘贴）：
+
+```text
+双击 scripts\start_r08_control.bat
+```
+
+停止或清理残留触控状态：
+
+```text
+双击 scripts\stop_r08_touch.bat
+```
+
+## 构建与验证
+
+需要 Rust 1.85 或更新版本：
 
 ```powershell
-.\target\release\r08.exe
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build -p r08 --release --bins
 ```
 
-Windows 请在“以管理员身份运行”的 PowerShell 或命令提示符中执行。也可以双击 `scripts\start_r08_control.bat`，脚本会请求一次 UAC 权限并保留控制窗口。管理员权限只用于临时停用戒指自身的 HID 鼠标子设备，普通鼠标不会被停用。
-
-启动完成后显示 `CONTROL_STANDBY`。此时电脑控制关闭；双击戒指、看到绿光后，程序收到 `02 02` 并显示 `CONTROL_AWAKE`，随后 1 分钟内上/下滑滚动，再次双击复制，三击粘贴。执行复制或粘贴时如果控制窗口仍在前台，程序会自动最小化并切回刚才的软件，再发送快捷键，避免模拟的 `Ctrl+C` 结束控制程序。超时后自动回到待机，必须再次双击唤醒。按 Enter 或 `Ctrl+C` 安全退出。`r08 interactive` 数字菜单只保留给协议调试使用，普通使用不需要进入。
+常用命令：
 
 | 命令 | 作用 |
 | --- | --- |
-| `r08` / `r08 control` | 待机；双击唤醒后开放 1 分钟滚动、复制和粘贴 |
-| `r08 interactive` | 高级协议调试数字菜单 |
-| `r08 self-check` | 打印平台能力；默认不注入 |
-| `r08 scan` | 扫描 `R08_9C07` |
-| `r08 device-info` | 只读 Device Information，不写特征 |
-| `r08 sensor-record` | 临时开启已知的 `A1 03` 三轴通知并保存 CSV；不发送 DFU |
-| `r08 sensor-stop` | 只发送 `A1 02`，用于关闭原始传感器模式和闪烁的 LED |
-| `r08 imu-stream` | 仅用于未刷入的 IMU 固件候选联调；默认不注入，也不刷写 |
-| `r08 ota-fetch` | 查询 QRing 官方 OTA，并只下载硬件/固件版本精确匹配的镜像；不连接戒指、不发送 DFU |
-| `r08 listen` | 打开触控通知并记录动作，**不注入** |
-| `r08 disable-touch` | 发送官方 `0x3B` 关闭触控 |
+| `r08 self-check` | 检查本机 BLE、HID 和输入注入后端，不连接戒指 |
+| `r08 scan` | 扫描目标戒指 |
+| `r08 device-info` | 只读设备身份 |
+| `r08 imu-stream` | v7 连续姿态滚轮；默认只监听，显式 `--inject` 才注入 |
+| `r08 control` | 触控上下滑、复制和粘贴 |
+| `r08 listen` | 监听触控通知，不注入 |
+| `r08 sensor-record` | 临时采集原厂低速传感器通道；会闪 LED，不发送 DFU |
+| `r08 sensor-stop` | 发送 `A1 02`，停止原始传感器与 LED |
+| `r08 ota-fetch` | 从官方接口查询或下载精确匹配的原厂镜像，不连接戒指 |
+| `r08 disable-touch` | 关闭官方触控模式 |
 
-快捷脚本：`scripts/start_r08_control.sh` / `.bat`，停止用 `scripts/stop_r08_touch.sh` / `.bat`。控制模式会把日志同时写到 `r08-control-latest.log`。按 Enter 或 Ctrl+C 会释放按键并关闭触控。
-
-需要查看成功连接、TX/RX 和戒指真实休眠状态时，可先在 PowerShell 执行 `$env:RUST_LOG='info'`；如果环境中设为 `warn`，日志只记录警告，成功运行时文件可能为空。
-
-运行时请完全退出手机官方 App 并关闭手机蓝牙。程序只匹配 `R08_9C07` / `31:31:45:37:9C:07`。Windows 会进一步精确匹配这个戒指的 HID 鼠标 `COL01` 子设备：程序运行期间临时停用它，退出时恢复，因此戒指手势不会推动鼠标光标，普通鼠标也不受影响。默认启动会直接注入滚动、复制和粘贴；`listen` 和调试模式仍不注入。
-
-三平台差异：
-
-- **Windows**：优先通过 Win32 GATT 复用系统已经建立的 BLE 连接，不要求戒指重新广播；失败时才回退到 WinRT 和 btleplug 扫描。程序不读取戒指的鼠标位移，也不采用“移动后再拉回光标”的方案；上下滑、双击和三击只读取离散 GATT `0x1D` 动作，分别注入滚轮、Ctrl+C 和 Ctrl+V。运行期间只临时停用精确匹配的 R08 HID 鼠标 `COL01`，退出时自动恢复，因此需要管理员权限。
-- **Linux**：GATT（BlueZ）+ evdev grab。grab 后戒指不会推动系统指针。滚轮经 `/dev/uinput` 的 `REL_WHEEL_HI_RES` 注入；用户需要 `input` 组权限。
-- **macOS**：GATT（Core Bluetooth）可用。系统 HID 会占用 BLE 鼠标，因此没有逐点相对 Y 跟踪；上下滑走离散 GATT `0x1D`。复制/粘贴为 Command+C / Command+V，需要辅助功能权限。不要把平滑拆步说成真实触摸跟踪。
-
-自定义 GATT `0x1D` 仍是离散动作：`1` 点击、`2` 下滑、`3` 上滑。没有绝对坐标、压力或接触面积。动作 `4/5`、左右滑和长按默认无操作。程序拒绝写入官方 DFU 特征；官方同版本镜像已经保存，但恢复入口仍未验证，因此当前不对刷写做任何承诺。
-
-`imu-stream` 是离线候选配套的故障安全主机路径，不适用于原厂固件。它要求显式确认，默认只校准和记录；即使加 `--inject` 也只发送普通 NUS 控制命令和注入滚轮，不会调用 DFU。当前唯一戒指禁止刷候选，所以现阶段不要把下面命令用于真机期待数据：
+连续滚轮等价命令：
 
 ```powershell
-.\target\release\r08.exe imu-stream --acknowledge-unverified-candidate
+.\target\release\r08.exe imu-stream `
+  --acknowledge-unverified-candidate `
+  --inject `
+  --gain 0.2 `
+  --full-speed 60
 ```
 
-候选协议采用 `A1 09 01/00` 启停、`A2 10` 10 Hz IMU 通知、12 秒固件硬超时和 8 秒主机续期；stale、序号跳变、校验错误、250 ms 无数据或无效重力都会急停并释放输入。详细设计和不可刷原因见 [`firmware_research/RT08_IMU_ONLY_STREAM_DESIGN_20260826.md`](firmware_research/RT08_IMU_ONLY_STREAM_DESIGN_20260826.md)。
+## 已验证状态
 
-候选机器码已通过 9 个 ARMv6-M Thumb 指令级仿真场景（含断连后在读取 FIFO/通知前立即停流）和完整测试回归，但仍没有真实 RTOS、功耗、bank 激活和独立恢复验证，因此分类不变。验证细节见 [`firmware_research/RT08_TIMER_AND_PATCH_EMULATION_20260826.md`](firmware_research/RT08_TIMER_AND_PATCH_EMULATION_20260826.md)，唯一设备的恢复能力矩阵见 [`firmware_research/RECOVERY_READONLY_RUNBOOK.md`](firmware_research/RECOVERY_READONLY_RUNBOOK.md)。
+- v7 固件 SHA-256：`575d500b385f61b6cc1cf8eb9d1a55b68da4ff49a0be32800f8f91f2d8a1ff2a`。
+- 固件持续输出约 9～10 Hz 的 `A2 10` IMU 通知。
+- 30 秒真机注入确认双向滚动、回正停止、8 秒续期和一次 BLE 空档后的安全恢复。
+- 推荐参数下滚轮峰值约 `-12..+12`；回正时实测逐步降为 `8,6,4,2,1,0`。
+- 稳态超过 250 ms 无数据会先释放输入并急停，再最多恢复两次；超过上限直接退出。
+- 主机仍拒绝校验错误、序号异常、零重力向量和三轴角点饱和数据。
 
-## 三轴传感器可观测性测试（不刷固件）
+尚未验证长时间功耗、异常掉电后的 Bootloader 搬运恢复和独立硬件恢复入口，因此不要把 v7 描述为量产固件。
 
-先完全退出手机官方 App 并关闭手机蓝牙。下面的命令会发送已知的 `A1 04 04`，记录 `A1 03` 三轴通知 20 秒，然后无论正常结束还是按 `Ctrl+C` 都会尝试发送 `A1 02`。测试期间绿灯可能闪烁、耗电会增加：
+## 硬件与交互边界
 
-```powershell
-.\target\release\r08.exe sensor-record --seconds 20 --output captures\still.csv
-```
+- 原厂自定义 GATT `0x1D` 只有离散动作：`1` 点击、`2` 下滑、`3` 上滑；没有触摸绝对坐标、压力或接触面积。
+- 左右滑和长按没有稳定独立动作码，不能可靠映射光标、退格或撤销。
+- 原厂 `A1 04 04` 是光学/传感器原始模式，会让 LED 闪烁；它不是触控开关。
+- v7 的连续滚轮来自 LIS3DH 姿态流，不是更高分辨率的手指触摸坐标。
 
-建议分别录三段并使用不同文件名：静止、缓慢倾斜、沿手指轴转动。程序结束时会打印采样数、有效频率和各轴范围。也可以离线比较：
+## 固件研究
 
-```powershell
-python firmware_research\scripts\analyze_sensor_csv.py captures\still.csv captures\tilt.csv captures\rotate.csv
-```
+仓库只保留我们编写的源码、补丁、测试、协议结论和哈希，不再提交官方 APK、SDK、固件镜像、反编译目录、运行日志或候选二进制。
 
-如果采集程序异常退出且 LED 没停，运行：
+- 当前技术状态：[HANDOFF.md](HANDOFF.md)
+- 固件研究入口：[firmware_research/README.md](firmware_research/README.md)
+- v7 补丁源码：`firmware_research/patches/r08_imu_stream/`
+- 主机连续滚轮：`r08/src/imu_scroll.rs`
+- 哈希锁定 DFU：`r08/src/sacrificial_dfu.rs` 与 `r08/src/bin/r08_sacrificial_dfu.rs`
 
-```powershell
-.\target\release\r08.exe sensor-stop
-```
-
-该流程只使用普通 UART 控制特征，不写 DFU。CSV 使用新文件创建模式，目标文件已经存在时会拒绝覆盖。
-
-## 只读查询官方 OTA
-
-下面的命令只访问 QRing 官方服务器，不连接戒指，也不会发送 DFU。程序先显示即将提交的设备版本和已遮罩 MAC，得到确认后按官方 App 的访客模式申请临时令牌，再查询 OTA。临时令牌只存在于进程内存，不会显示、写入日志或元数据。
-
-```powershell
-.\target\release\r08.exe ota-fetch
-```
-
-默认只接受与 `RT08_V3.1 / RT08_3.10.48_260309` 匹配的返回结果。版本或硬件不匹配、响应缺少身份字段、下载不是 HTTPS、文件超过官方 App 上限、目标文件已存在但哈希不同，都会停止且不覆盖文件。下载结果保存在被 Git 忽略的 `firmware_research/evidence/ota/`，同时生成不含令牌和签名查询参数的元数据与 SHA-256。只想验证服务器是否返回匹配包时使用：
-
-```powershell
-.\target\release\r08.exe ota-fetch --metadata-only
-```
-
-当前版本直接查询会得到官方状态 `60001 / No upgraded version`。若要备份服务器上的当前最新版，可以只在查询字段中报告较旧版本；程序仍以真实的 `--rom-version` 校验返回包，硬件和目标版本不精确匹配就拒绝下载：
-
-```powershell
-.\target\release\r08.exe ota-fetch --query-rom-version RT08_3.10.47_260101
-```
-
-2026-08-26 已通过该流程取得官方 `RT08_3.10.48_260309.bin`，大小 `146812` 字节，SHA-256 `c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b`。查询值只用于触发官方服务器返回最新版，并不声称 `3.10.47_260101` 是已证实存在的历史固件。
-
-如需兼容其他会话，可以用 `ota-fetch --token-auth` 隐式输入现有令牌，或用 `ota-fetch --account-auth` 隐式输入 QRing 邮箱和密码。程序不会从手机或 App 自动提取令牌。即使成功下载，镜像仍然只能进入离线检查流程，不能因此执行刷写。
-
-## R08_9C07 遗留 Windows 连接（不推荐，会短暂移动光标）
-
-如果仍要使用已验证的 C# 控制器：Windows 设置里已经配对 `R08_9C07` 后，双击 `start_native_control.bat`。这个版本通过 Windows 原生 GATT API 打开已配对戒指，不依赖“隐私和安全性 → 其他设备”中的桌面应用列表；该列表为空不影响使用。
-
-运行时请完全退出手机官方 App 并关闭手机蓝牙，避免手机抢占戒指连接。窗口显示 `HID_DEVICE` 和 `CONTROL_READY` 后，切换到要操作的浏览器或编辑器并保持控制程序运行。R08 固件会把上下滑报告成鼠标指针的纵向位移；程序只识别地址为 `313145379C07` 的戒指输入，把这段位移转换成高分辨率滚轮并将鼠标指针恢复到普通鼠标最后停留的位置。双击执行复制，三击执行粘贴；普通鼠标的移动和点击不参与戒指映射。需要停止时回到控制窗口按 Enter。若修改了原生源码，先双击 `build_native_control.bat` 重新编译。
-
-Windows 设备管理器中，R08 会同时显示为“符合蓝牙低能耗 GATT 的 HID 设备”“HID-compliant mouse”和“符合 HID 标准的用户控制设备”。因此触控滑动主要走系统 HID，不一定出现在 `6e400003` 的自定义 BLE 通知中；“其他设备”隐私页面里没有桌面应用属于正常现象。
-
-R08_9C07 的 HID 报告描述符已经通过 Windows HID 驱动实测：鼠标集合输入报告为 7 字节，只包含 1 个按钮、16 位相对 X、16 位相对 Y 和 8 位 Wheel，且没有 Feature Report；消费者集合为 4 字节、24 个离散按键位。设备没有公开触摸绝对坐标、压力、接触面积等额外字段。C# 控制程序启动时会把这些 `HID_CAPS` / `HID_INPUT_VALUE` 信息写入日志，便于复核不同固件。
-
-Python `smart_ring_detector.py` 仍是一个面向 Windows 的 BLE 调试 GUI。它不依赖 Windows“添加蓝牙设备”配对，而是像官方 App 一样直接扫描并连接 BLE GATT 设备。
-
-## 使用方法
-
-1. 完全退出手机上的戒指 App，并临时关闭手机蓝牙，避免手机抢占连接。
-2. 把戒指放入充电盒再取出，或按设备说明唤醒它。
-3. 首次使用时双击 `install.bat` 安装 Python 依赖。
-4. 双击 `start.bat` 启动检测器。
-5. 点击“扫描 BLE 设备”，选择名称像戒指的设备，然后点击“连接所选设备”。
-6. 连接成功后直接操作戒指，观察“实时动作数据”页面。
-7. 测试某个动作前点击相应的动作标记，并在 8 秒内操作戒指。数据会携带该标签。
-
-要控制电脑：连接 R08 后点击“开启 R08 触摸控制”或“开启短视频触控”，再勾选“启用戒指控制 Windows”。R08_9C07 的真机默认映射已经校正为：上滑（动作 `3`）滚轮上、下滑（动作 `2`）滚轮下、双击复制、较慢三击粘贴。控制功能默认关闭，避免调试时误操作当前窗口。
-
-“电脑控制”页默认开启平滑滚动：一次上下滑会拆成多个高精度滚轮小步，默认在 360 ms 内滚动 2 格；连续同向滑动会累加，反向滑动会立即换向。原生控制程序使用精细滚动模式：快速短划只滚一个标准刻度；划动后保持触摸约 300 ms 才开始低速连续滚动，并在 1.5 秒、3 秒后逐级加速，松开立即停止。可以在界面把滚动量设为 1～10 格、完成时间设为 100～1500 ms。程序已经自动订阅设备公开的全部通知/指示特征，但 R08_9C07 实测只在手势完成后发送离散动作码，不会连续报告手指坐标，所以平滑效果由 Windows 端生成，无法与手指在触控区上的实时位置逐点同步。
-
-实时页面默认隐藏以 `A1` 开头的高频健康/传感器原始包，但它们仍会完整写入抓包文件。需要观察加速度时，可以勾选“显示 A1 原始健康/传感器数据”。
-
-每次连接都会自动在 `captures` 目录生成一个 `.jsonl` 文件。该文件包含：
-
-- 接收数据的时间；
-- Notify 特征 UUID；
-- 原始十六进制数据；
-- 测试时选择的动作标签；
-- 主动发送过的命令。
-
-当前已确认的目标戒指广播名称为 `R08_9C07`。程序扫描到该名称时会优先选中它；不要误选附近的 `LH-FG2C`。
-
-## COLMI 兼容命令
-
-“发送命令”页面预置了几条已公开记录的 COLMI 命令。检测器会将它们自动补齐为 16 字节，并在最后一字节写入校验和：
-
-- `02 04`：开启相机/遥控模式；
-- `02 06`：关闭相机/遥控模式；
-- `3B 02 00 01 01`：开启 R08 触摸控制（应用类型 1，1 分钟休眠）；
-- `3B 02 00 02 01`：开启 R08 短视频触摸控制（官方支持双击的应用类型 2）；
-- `3B 02 00 00 01`：关闭 R08 触摸控制；
-- `3B 01 00`：读取 R08 触摸控制状态；
-- `A1 04 04`：开启光学和传感器原始数据（会导致心率/血氧 LED 持续闪烁并增加耗电）；
-- `A1 02`：停止原始传感器数据。
-
-R08 的 `02 02 00 00 00 00 00 00 00 00 00 00 00 00 00 04` 是兼容按键事件：相机模式下可表示拍照/长按；当前触控模式真机日志确认，双击亮绿光时也会发送该包。Rust 默认控制器把它作为“开启 1 分钟电脑控制”的唤醒事件，不把这次双击同时算作复制。
-
-R08 官方 App 的 APK 已验证触摸控制使用命令号 `0x3B`。上述四个 `0x3B` 16 字节命令与官方 `TouchControlReq` 的构造和加和校验一致；`73 2A 01` / `73 2A 00` 只是设备状态通知，直接发送 `0x2A` 会得到 `AA EE` 错误回包。
-
-触摸动作使用 `0x1D` 通知。2026-08-25 对 R08_9C07 的 Android HID 现场复录确认：动作 `1` 是点击，动作 `2` 是下滑/上一项，动作 `3` 是上滑/下一项。快速双击会产生两个动作 `1`；快速三击的第三下常被固件吞掉，但把三次点击间隔放慢到约 400～700 ms 可以产生三个动作 `1`，程序使用 850 ms 聚合窗口识别粘贴。
-
-该戒指的横向动作没有独立输出：左滑、右滑通常会变成动作 `1`，偶尔误识别为动作 `2/3`；长按也没有稳定的 HID 输出。因此左右光标、退格和撤销不能可靠绑定到左右滑或长按，动作 `4/5` 与 `02 02` 默认设为“无操作”。
-
-未知型号应先直接操作戒指，观察是否已有通知。只有没有任何动作数据时，才尝试预置命令。不要向设备发送来源不明的命令。
-
-## 常见问题
-
-### 扫描不到戒指
-
-- 确认手机蓝牙已经关闭；
-- 让戒指靠近电脑；
-- 将戒指放回充电盒再取出；
-- 关闭再打开 Windows 蓝牙后重新扫描；
-- 检查电脑是否具有支持 BLE 的蓝牙适配器。
-
-### 能扫描但连接失败
-
-- 确认官方 App 已彻底退出，而不是仅回到手机桌面；
-- 如果戒指曾在 Windows 设置中留下失败的配对记录，先在设置中删除该设备；
-- 重启戒指和 Windows 蓝牙；
-- 某些设备只在唤醒后的短时间内允许连接，请唤醒后立即扫描连接。
-
-### 连接成功但没有动作数据
-
-先查看“服务与特征”中是否成功订阅了 Notify/Indicate 特征。如果设备是 COLMI 协议，可以尝试开启遥控模式。原始数据模式只用于光学和加速度调试，不能开启触控滑动模式。其他品牌可能需要从官方 App 的蓝牙通信中找出自己的启用命令。
+原厂镜像 SHA-256 为 `c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b`；RTL8762E SDK v1.5.0 ZIP SHA-256 为 `ef1f47b83d60aeb54edb83a34ecc9d92218965ab18ff02256773441d35f7db52`。这些第三方文件必须由使用者从可追溯来源另行取得。

@@ -29,3 +29,14 @@ jobs:
         run: cargo build --workspace --release
       - name: Self-check
         run: cargo run -p r08 --release -- self-check
+
+  firmware-research-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r firmware_research/requirements-analysis.txt pytest
+      - run: python -m pytest -q firmware_research/scripts

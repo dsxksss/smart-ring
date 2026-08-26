@@ -7,9 +7,16 @@ from analyze_rt08_thumb import HEADER_SIZE, address_to_file_offset, decode_thumb
 from build_rt08_imu_stream_candidate import (
     CAVE_ADDRESS,
     CAVE_END,
+    BUMPED_GIT_VERSION,
+    BUMPED_OUTER_FIRMWARE,
+    DEFAULT_STATUS_ADDRESS,
+    DEFAULT_STATUS_MARKER,
+    EXPECTED_STOCK_INNER_SHA256,
+    EXPECTED_STOCK_GIT_VERSION,
     HOOK_ADDRESS,
     HOOK_ORIGINAL,
     INNER_SHA256_OFFSET,
+    INNER_GIT_VERSION_OFFSET,
     build_candidate,
     validate_patch_binary,
 )
@@ -27,6 +34,9 @@ def candidate_fixture() -> bytes:
         struct.pack_into("<II", data, 4, payload_length, payload_length)
     hook_offset = address_to_file_offset(HOOK_ADDRESS, len(data))
     data[hook_offset : hook_offset + 4] = HOOK_ORIGINAL
+    data[INNER_SHA256_OFFSET : INNER_SHA256_OFFSET + 32] = (
+        EXPECTED_STOCK_INNER_SHA256
+    )
     struct.pack_into("<I", data, 12, sum(data[HEADER_SIZE:]) & 0xFFFFFFFF)
     return bytes(data)
 
@@ -48,6 +58,50 @@ class ImuStreamCandidateBuilderTests(unittest.TestCase):
         self.assertGreater(report["changed_byte_count"], 0)
         self.assertFalse(report["flash_allowed"])
 
+    def test_optional_revision_bump_is_exact_and_reported(self) -> None:
+        stock = bytearray(candidate_fixture())
+        struct.pack_into("<I", stock, INNER_GIT_VERSION_OFFSET, EXPECTED_STOCK_GIT_VERSION)
+        struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)
+        candidate, report = build_candidate(
+            bytes(stock),
+            bytes(range(32)),
+            enforce_stock_hash=False,
+            validate_patch=False,
+            bump_internal_revision=True,
+        )
+        self.assertEqual(
+            struct.unpack_from("<I", candidate, INNER_GIT_VERSION_OFFSET)[0],
+            BUMPED_GIT_VERSION,
+        )
+        self.assertEqual(report["internal_version"]["candidate_semantic"], "1.4.6")
+        self.assertTrue(report["internal_version"]["bumped_for_bank_selection"])
+        self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_optional_activation_markers_are_exact_and_reported(self) -> None:
+        stock = bytearray(candidate_fixture())
+        stock[0x10 : 0x10 + len(BUMPED_OUTER_FIRMWARE)] = b"RT08_3.10.48_260309"
+        marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
+        stock[marker_offset : marker_offset + 2] = bytes.fromhex("ff 21")
+        struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)
+        candidate, report = build_candidate(
+            bytes(stock),
+            bytes(range(32)),
+            enforce_stock_hash=False,
+            validate_patch=False,
+            bump_outer_revision=True,
+            add_activation_marker=True,
+        )
+        self.assertEqual(
+            candidate[0x10 : 0x10 + len(BUMPED_OUTER_FIRMWARE)],
+            BUMPED_OUTER_FIRMWARE,
+        )
+        self.assertEqual(
+            candidate[marker_offset : marker_offset + 2], DEFAULT_STATUS_MARKER
+        )
+        self.assertTrue(report["outer_firmware_revision"]["bumped"])
+        self.assertTrue(report["activation_marker"]["enabled"])
+        self.assertEqual(report["unplanned_differences"], 0)
+
     def test_rejects_oversized_patch(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not fit"):
             build_candidate(
@@ -61,7 +115,7 @@ class ImuStreamCandidateBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly match"):
             validate_patch_binary(b"\0" * (CAVE_END - CAVE_ADDRESS))
 
-    def test_rejects_stock_with_enabled_sha_field_assumption(self) -> None:
+    def test_rejects_stock_with_unexpected_sdk_digest(self) -> None:
         stock = bytearray(candidate_fixture())
         stock[INNER_SHA256_OFFSET] = 1
         struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)

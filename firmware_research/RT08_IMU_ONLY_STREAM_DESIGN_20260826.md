@@ -116,7 +116,7 @@ Windows 端只在 IMU 包 valid 且序号连续时使用样本：
 先运行只读锚点校验；它会验证官方镜像 SHA-256 和上述关键原始指令字节，不修改输入文件：
 
 ```powershell
-python firmware_research\scripts\verify_rt08_imu_stream_anchors.py research_artifacts\firmware\RT08_3.10.48_260309.bin
+python firmware_research\scripts\verify_rt08_imu_stream_anchors.py path\to\RT08_3.10.48_260309.bin
 ```
 
 任何候选补丁都必须同时提供：

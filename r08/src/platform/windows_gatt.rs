@@ -25,6 +25,12 @@ use crate::protocol::{
 };
 
 const RING_BLUETOOTH_ADDRESS: u64 = 0x3131_4537_9C07;
+const DFU_SERVICE_UUID: Uuid = Uuid::from_u128(0xde5bf728_d711_4e47_af26_65e3012a5dc7);
+const DFU_NOTIFY_UUID: Uuid = Uuid::from_u128(0xde5bf729_d711_4e47_af26_65e3012a5dc7);
+const DFU_WRITE_UUID: Uuid = Uuid::from_u128(0xde5bf72a_d711_4e47_af26_65e3012a5dc7);
+const HARDWARE_UUID: Uuid = Uuid::from_u128(0x00002a27_0000_1000_8000_00805f9b34fb);
+const FIRMWARE_UUID: Uuid = Uuid::from_u128(0x00002a26_0000_1000_8000_00805f9b34fb);
+const BATTERY_UUID: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
 
 pub struct WindowsGattConnection {
     device: Option<BluetoothLEDevice>,
@@ -332,6 +338,324 @@ impl Drop for WindowsGattConnection {
             let _ = device.Close();
         }
     }
+}
+
+/// Destructive QRing DFU transport used only by the hash-locked sacrificial
+/// test command. The ordinary `RingConnection` continues to reject DFU UUIDs.
+pub struct WindowsDfuConnection {
+    device: Option<BluetoothLEDevice>,
+    services: Vec<GattDeviceService>,
+    characteristics: Vec<(Uuid, GattCharacteristic)>,
+    write: GattCharacteristic,
+    notify: GattCharacteristic,
+    uart_write: GattCharacteristic,
+    uart_notify: GattCharacteristic,
+    notify_token: Mutex<Option<EventRegistrationToken>>,
+}
+
+impl WindowsDfuConnection {
+    pub async fn connect_exact() -> Result<Self> {
+        let (device, services) = match (
+            open_registered_service(DFU_SERVICE_UUID).await,
+            open_registered_service(DIS_SERVICE).await,
+            open_registered_service(NORDIC_UART_SERVICE).await,
+        ) {
+            (Ok(dfu), Ok(dis), Ok(uart)) => (None, vec![dfu, dis, uart]),
+            _ => {
+                let device = open_exact_paired_device().await?;
+                let actual_address = device.BluetoothAddress()?;
+                if actual_address != RING_BLUETOOTH_ADDRESS {
+                    bail!(
+                        "Windows returned wrong BLE address: {actual_address:012X}, expected {RING_BLUETOOTH_ADDRESS:012X}"
+                    );
+                }
+                if !device.Name()?.to_string().eq_ignore_ascii_case(RING_NAME) {
+                    bail!("Windows returned wrong BLE name: {}", device.Name()?);
+                }
+                let service_result = await_operation(
+                    device
+                        .GetGattServicesWithCacheModeAsync(BluetoothCacheMode::Uncached)
+                        .context("request exact R08 GATT services")?,
+                )
+                .await
+                .context("read exact R08 GATT services")?;
+                require_success(
+                    service_result.Status()?,
+                    "enumerate exact R08 GATT services",
+                )?;
+                let services: Vec<_> = service_result.Services()?.into_iter().collect();
+                (Some(device), services)
+            }
+        };
+        let mut characteristics = Vec::new();
+        for service in &services {
+            let service_uuid = guid_to_uuid(service.Uuid()?);
+            let result = await_operation(
+                service
+                    .GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)
+                    .with_context(|| format!("request characteristics for {service_uuid}"))?,
+            )
+            .await
+            .with_context(|| format!("read characteristics for {service_uuid}"))?;
+            if result.Status()? != GattCommunicationStatus::Success {
+                continue;
+            }
+            characteristics.extend(
+                result
+                    .Characteristics()?
+                    .into_iter()
+                    .map(|item| Ok((guid_to_uuid(item.Uuid()?), item)))
+                    .collect::<windows::core::Result<Vec<_>>>()?,
+            );
+        }
+        if !services
+            .iter()
+            .any(|service| guid_to_uuid(service.Uuid().unwrap_or_default()) == DFU_SERVICE_UUID)
+        {
+            bail!("exact R08 does not expose the official QRing DFU service");
+        }
+        let find = |uuid| {
+            characteristics
+                .iter()
+                .find(|(candidate, _)| *candidate == uuid)
+                .map(|(_, item)| item.clone())
+                .with_context(|| format!("exact R08 is missing characteristic {uuid}"))
+        };
+        let write = find(DFU_WRITE_UUID)?;
+        let notify = find(DFU_NOTIFY_UUID)?;
+        let uart_write = find(NORDIC_UART_WRITE)?;
+        let uart_notify = find(NORDIC_UART_NOTIFY)?;
+        let connection = Self {
+            device,
+            services,
+            characteristics,
+            write,
+            notify,
+            uart_write,
+            uart_notify,
+            notify_token: Mutex::new(None),
+        };
+        connection.require_text(HARDWARE_UUID, "RT08_V3.1").await?;
+        connection
+            .require_text(FIRMWARE_UUID, "RT08_3.10.48_260309")
+            .await?;
+        Ok(connection)
+    }
+
+    pub async fn battery_percent(&self) -> Result<u8> {
+        if self
+            .characteristics
+            .iter()
+            .any(|(candidate, _)| *candidate == BATTERY_UUID)
+        {
+            let bytes = self.read_characteristic(BATTERY_UUID).await?;
+            if bytes.len() != 1 || bytes[0] > 100 {
+                bail!("invalid battery response: {}", format_packet(&bytes));
+            }
+            return Ok(bytes[0]);
+        }
+
+        // R08 does not register the standard Battery Service in Windows. The
+        // official app instead sends SimpleKeyReq(0x03) over its UART service.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handler = TypedEventHandler::new(
+            move |_: &Option<GattCharacteristic>, args: &Option<GattValueChangedEventArgs>| {
+                if let Some(args) = args {
+                    let _ = tx.send(buffer_to_vec(&args.CharacteristicValue()?)?);
+                }
+                Ok(())
+            },
+        );
+        let token = self.uart_notify.ValueChanged(&handler)?;
+        let status = await_operation(
+            self.uart_notify
+                .WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue::Notify,
+                )?,
+        )
+        .await?;
+        require_success(status, "enable UART battery notifications")?;
+
+        let mut query = [0_u8; 16];
+        query[0] = 0x03;
+        query[15] = 0x03;
+        let response = async {
+            self.write_uart_packet(&query).await?;
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let packet = rx.recv().await.context("UART notification stream ended")?;
+                    if packet.first().map(|value| value & 0x7f) == Some(0x03) {
+                        return Ok::<_, anyhow::Error>(packet);
+                    }
+                }
+            })
+            .await
+            .context("timeout waiting for official R08 battery response")?
+        }
+        .await;
+        let _ = self.uart_notify.RemoveValueChanged(token);
+        if let Ok(operation) = self
+            .uart_notify
+            .WriteClientCharacteristicConfigurationDescriptorAsync(
+                GattClientCharacteristicConfigurationDescriptorValue::None,
+            )
+        {
+            let _ = await_operation(operation).await;
+        }
+        let packet = response?;
+        if packet.len() != 16
+            || packet[..15]
+                .iter()
+                .fold(0_u8, |sum, value| sum.wrapping_add(*value))
+                != packet[15]
+            || packet[1] > 100
+        {
+            bail!(
+                "invalid official UART battery response: {}",
+                format_packet(&packet)
+            );
+        }
+        Ok(packet[1])
+    }
+
+    pub async fn subscribe(&self) -> Result<Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handler = TypedEventHandler::new(
+            move |_: &Option<GattCharacteristic>, args: &Option<GattValueChangedEventArgs>| {
+                if let Some(args) = args {
+                    let bytes = buffer_to_vec(&args.CharacteristicValue()?)?;
+                    let _ = tx.send(bytes);
+                }
+                Ok(())
+            },
+        );
+        let token = self.notify.ValueChanged(&handler)?;
+        let status = await_operation(
+            self.notify
+                .WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue::Notify,
+                )?,
+        )
+        .await?;
+        if status != GattCommunicationStatus::Success {
+            let _ = self.notify.RemoveValueChanged(token);
+            bail!("enable DFU notifications failed: {status:?}");
+        }
+        *self.notify_token.lock().expect("DFU notify token mutex") = Some(token);
+        Ok(Box::pin(UnboundedReceiverStream::new(rx)))
+    }
+
+    pub async fn write_frame(&self, frame: &[u8]) -> Result<()> {
+        for chunk in frame.chunks(20) {
+            let writer = DataWriter::new()?;
+            writer.WriteBytes(chunk)?;
+            let buffer = writer.DetachBuffer()?;
+            let status = await_operation(
+                self.write
+                    .WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithoutResponse)?,
+            )
+            .await?;
+            require_success(status, "write QRing DFU chunk")?;
+            tokio::time::sleep(std::time::Duration::from_millis(4)).await;
+        }
+        Ok(())
+    }
+
+    pub async fn disconnect(&self) -> Result<()> {
+        self.remove_notification_handler();
+        if let Ok(operation) = self
+            .notify
+            .WriteClientCharacteristicConfigurationDescriptorAsync(
+                GattClientCharacteristicConfigurationDescriptorValue::None,
+            )
+        {
+            let _ = await_operation(operation).await;
+        }
+        for service in &self.services {
+            let _ = service.Close();
+        }
+        if let Some(device) = &self.device {
+            let _ = device.Close();
+        }
+        Ok(())
+    }
+
+    async fn require_text(&self, uuid: Uuid, expected: &str) -> Result<()> {
+        let bytes = self.read_characteristic(uuid).await?;
+        let actual = String::from_utf8(bytes)?.trim_end_matches('\0').to_string();
+        if actual != expected {
+            bail!("identity mismatch for {uuid}: {actual:?}, expected {expected:?}");
+        }
+        Ok(())
+    }
+
+    async fn read_characteristic(&self, uuid: Uuid) -> Result<Vec<u8>> {
+        let characteristic = self
+            .characteristics
+            .iter()
+            .find(|(candidate, _)| *candidate == uuid)
+            .map(|(_, item)| item)
+            .with_context(|| format!("missing readable characteristic {uuid}"))?;
+        let result = await_operation(
+            characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?,
+        )
+        .await?;
+        require_success(result.Status()?, &format!("read characteristic {uuid}"))?;
+        Ok(buffer_to_vec(&result.Value()?)?)
+    }
+
+    async fn write_uart_packet(&self, packet: &[u8]) -> Result<()> {
+        let writer = DataWriter::new()?;
+        writer.WriteBytes(packet)?;
+        let buffer = writer.DetachBuffer()?;
+        let status = await_operation(
+            self.uart_write
+                .WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse)?,
+        )
+        .await?;
+        require_success(status, "write official R08 battery query")
+    }
+
+    fn remove_notification_handler(&self) {
+        if let Some(token) = self
+            .notify_token
+            .lock()
+            .expect("DFU notify token mutex")
+            .take()
+        {
+            let _ = self.notify.RemoveValueChanged(token);
+        }
+    }
+}
+
+impl Drop for WindowsDfuConnection {
+    fn drop(&mut self) {
+        self.remove_notification_handler();
+        for service in &self.services {
+            let _ = service.Close();
+        }
+        if let Some(device) = &self.device {
+            let _ = device.Close();
+        }
+    }
+}
+
+async fn open_exact_paired_device() -> Result<BluetoothLEDevice> {
+    let selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true)?;
+    let devices = await_operation(DeviceInformation::FindAllAsyncAqsFilter(&selector)?).await?;
+    for info in devices.into_iter() {
+        let id = info.Id()?;
+        let normalized_id = id.to_string().to_ascii_uppercase().replace([':', '-'], "");
+        if !normalized_id.contains("313145379C07") {
+            continue;
+        }
+        let device = await_operation(BluetoothLEDevice::FromIdAsync(&id)?).await?;
+        if device.BluetoothAddress()? == RING_BLUETOOTH_ADDRESS {
+            return Ok(device);
+        }
+        let _ = device.Close();
+    }
+    bail!("Windows paired BLE list does not contain exact {RING_NAME} / {RING_MAC}")
 }
 
 fn require_success(status: GattCommunicationStatus, action: &str) -> Result<()> {

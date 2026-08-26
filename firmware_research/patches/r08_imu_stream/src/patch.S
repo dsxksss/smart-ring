@@ -63,8 +63,8 @@ r08_custom_control:
 .Lcontrol_done:
     pop  {r0, r4}
     mov  lr, r4
-    /* The stock response epilogue consumes the 0xFF status still held in r1. */
-    movs r1, #0xFF
+    /* Unique diagnostic status: A1 FE proves this patched hook executed. */
+    movs r1, #0xFE
     ldr  r0, .La1_epilogue
     bx   r0
 

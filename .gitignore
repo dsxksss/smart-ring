@@ -13,6 +13,8 @@ captures/
 # Phone/ADB artifacts and screenshots
 platform-tools-latest-windows.zip
 tools/
+research_artifacts/
+.local_backup/
 firmware_research/evidence/
 firmware_research/decompiled_app_fragments/
 firmware_research/*.png
@@ -35,7 +37,3 @@ r08/target/
 *.hex
 *.img
 *.fw
-
-# Explicit user-authorized portable research bundle for cross-computer handoff
-!research_artifacts/
-!research_artifacts/**

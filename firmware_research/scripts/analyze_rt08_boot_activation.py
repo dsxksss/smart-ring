@@ -28,6 +28,9 @@ EXPECTED_STOCK_SHA256 = (
 )
 APP_IMAGE_ID = 0x2793
 EXPECTED_CTRL_FLAGS = 0x0981
+EXPECTED_STOCK_IMAGE_DIGEST = bytes.fromhex(
+    "3e143d383a69b749ed928345ac04d517d7aefb95ecc0f2f4eafbe9fd9b146f8f"
+)
 RAW_VERSION_FORMAT = bytes.fromhex("41 10 00 00 9e a3 01 12")
 
 # Each anchor is an independently checked instruction sequence from the exact
@@ -110,8 +113,8 @@ def analyze(data: bytes) -> dict[str, Any]:
         raise ValueError(f"unexpected app image id 0x{image_id:04x}")
     if raw_version != RAW_VERSION_FORMAT:
         raise ValueError(f"unexpected raw version bytes: {raw_version.hex(' ')}")
-    if any(stored_sha256):
-        raise ValueError("stock image unexpectedly enables a nonzero SHA-256 field")
+    if stored_sha256 != EXPECTED_STOCK_IMAGE_DIGEST:
+        raise ValueError("stock SDK-generated image digest mismatch")
 
     return {
         "classification": "READ_ONLY_STATIC_ACTIVATION_PATH",
@@ -120,6 +123,8 @@ def analyze(data: bytes) -> dict[str, Any]:
         "control_flags": f"0x{ctrl_flags:04X}",
         "integrity_check_en_in_boot": bool(ctrl_flags & (1 << 9)),
         "stored_sha256_all_zero": not any(stored_sha256),
+        "stored_sha256": stored_sha256.hex(),
+        "stored_sha256_offset": f"0x{RTL8762E_SHA256_OFFSET:03X}",
         "raw_version_format_bytes": raw_version.hex(" "),
         "raw_version_semantics_proven": True,
         "application_git_version": {

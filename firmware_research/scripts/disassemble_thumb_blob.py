@@ -14,12 +14,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Disassemble a raw Thumb binary")
     parser.add_argument("blob", type=Path)
     parser.add_argument("--base", type=parse_int, required=True)
+    parser.add_argument("--offset", type=parse_int, default=0)
     parser.add_argument("--code-bytes", type=parse_int)
     parser.add_argument("--engine-path", type=Path)
     args = parser.parse_args()
 
     data = args.blob.read_bytes()
-    code = data if args.code_bytes is None else data[: args.code_bytes]
+    if args.offset < 0 or args.offset > len(data):
+        parser.error("--offset is outside the input blob")
+    available = data[args.offset :]
+    code = available if args.code_bytes is None else available[: args.code_bytes]
     disassembler = load_disassembler(args.engine_path)
     instructions = [
         {
@@ -35,6 +39,7 @@ def main() -> int:
             {
                 "blob": str(args.blob),
                 "base": args.base,
+                "offset": args.offset,
                 "size": len(data),
                 "code_bytes": len(code),
                 "instructions": instructions,

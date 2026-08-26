@@ -23,7 +23,7 @@ EXPECTED_STOCK_SHA256 = (
     "c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b"
 )
 EXPECTED_PATCH_SHA256 = (
-    "0aeb8f7fd8ed84e642b38dadfa578d0185fd3aee96a55554ce2798c9a0faec0a"
+    "736ceb0f70b186c487dc816ced7f637cf9ae4c7b1d4e1d34bd931a1300ebcbd5"
 )
 EXPECTED_PATCH_SIZE = 292
 HOOK_ADDRESS = 0x008280F6
@@ -31,7 +31,19 @@ HOOK_ORIGINAL = bytes.fromhex("3e 70 7e 70")
 CAVE_ADDRESS = 0x00849B08
 CAVE_END = 0x00849C30
 INNER_CTRL_FLAGS_OFFSET = HEADER_SIZE + 2
-INNER_SHA256_OFFSET = HEADER_SIZE + 0x394
+INNER_SHA256_OFFSET = HEADER_SIZE + 0x174
+EXPECTED_STOCK_INNER_SHA256 = bytes.fromhex(
+    "3e143d383a69b749ed928345ac04d517d7aefb95ecc0f2f4eafbe9fd9b146f8f"
+)
+INNER_GIT_VERSION_OFFSET = HEADER_SIZE + 0x60
+EXPECTED_STOCK_GIT_VERSION = 0x00001041  # 1.4.1 in T_IMAGE_VERSION layout
+BUMPED_GIT_VERSION = 0x00006041  # 1.4.6; newer than the activated v6 probe
+OUTER_FIRMWARE_OFFSET = 0x10
+EXPECTED_OUTER_FIRMWARE = b"RT08_3.10.48_260309"
+BUMPED_OUTER_FIRMWARE = b"RT08_3.10.51_260827"
+DEFAULT_STATUS_ADDRESS = 0x008280CA
+DEFAULT_STATUS_ORIGINAL = bytes.fromhex("ff 21")  # movs r1, #0xff
+DEFAULT_STATUS_MARKER = bytes.fromhex("fd 21")  # movs r1, #0xfd
 EXPECTED_LITERAL_WORDS = (
     0x00209CB8,
     0x00209CC8,
@@ -100,6 +112,9 @@ def build_candidate(
     *,
     enforce_stock_hash: bool = True,
     validate_patch: bool = True,
+    bump_internal_revision: bool = False,
+    bump_outer_revision: bool = False,
+    add_activation_marker: bool = False,
 ) -> tuple[bytes, dict[str, Any]]:
     load_image_bytes = bytearray(stock)
     stock_hash = sha256_hex(stock)
@@ -137,10 +152,33 @@ def build_candidate(
         raise AssertionError("encoded hook does not round-trip")
 
     stored_inner_sha = stock[INNER_SHA256_OFFSET : INNER_SHA256_OFFSET + 32]
-    if any(stored_inner_sha):
-        raise ValueError("expected disabled stock inner SHA-256 field to be all zero")
+    if stored_inner_sha != EXPECTED_STOCK_INNER_SHA256:
+        raise ValueError("unexpected stock SDK-generated inner SHA-256 field")
     load_image_bytes[hook_offset : hook_offset + 4] = hook
     load_image_bytes[cave_offset : cave_offset + len(patch)] = patch
+    stock_git_version = struct.unpack_from("<I", stock, INNER_GIT_VERSION_OFFSET)[0]
+    if bump_internal_revision:
+        if stock_git_version != EXPECTED_STOCK_GIT_VERSION:
+            raise ValueError(
+                f"unexpected stock internal version 0x{stock_git_version:08x}"
+            )
+        struct.pack_into(
+            "<I", load_image_bytes, INNER_GIT_VERSION_OFFSET, BUMPED_GIT_VERSION
+        )
+    if bump_outer_revision:
+        outer = stock[
+            OUTER_FIRMWARE_OFFSET : OUTER_FIRMWARE_OFFSET + len(EXPECTED_OUTER_FIRMWARE)
+        ]
+        if outer != EXPECTED_OUTER_FIRMWARE:
+            raise ValueError(f"unexpected outer firmware marker {outer!r}")
+        load_image_bytes[
+            OUTER_FIRMWARE_OFFSET : OUTER_FIRMWARE_OFFSET + len(BUMPED_OUTER_FIRMWARE)
+        ] = BUMPED_OUTER_FIRMWARE
+    if add_activation_marker:
+        marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
+        if stock[marker_offset : marker_offset + 2] != DEFAULT_STATUS_ORIGINAL:
+            raise ValueError("stock A1 default-status bytes do not match")
+        load_image_bytes[marker_offset : marker_offset + 2] = DEFAULT_STATUS_MARKER
     payload = load_image_bytes[HEADER_SIZE:]
     struct.pack_into("<I", load_image_bytes, 12, sum(payload) & 0xFFFFFFFF)
 
@@ -153,6 +191,17 @@ def build_candidate(
     allowed_offsets = set(range(12, 16))
     allowed_offsets.update(range(hook_offset, hook_offset + len(hook)))
     allowed_offsets.update(range(cave_offset, cave_offset + len(patch)))
+    if bump_internal_revision:
+        allowed_offsets.update(
+            range(INNER_GIT_VERSION_OFFSET, INNER_GIT_VERSION_OFFSET + 4)
+        )
+    if bump_outer_revision:
+        allowed_offsets.update(
+            range(OUTER_FIRMWARE_OFFSET, OUTER_FIRMWARE_OFFSET + len(BUMPED_OUTER_FIRMWARE))
+        )
+    if add_activation_marker:
+        marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
+        allowed_offsets.update(range(marker_offset, marker_offset + 2))
     unexpected_offsets = changed_offsets - allowed_offsets
     if unexpected_offsets:
         first = min(unexpected_offsets)
@@ -185,12 +234,72 @@ def build_candidate(
                 "address": CAVE_ADDRESS,
                 "length": len(patch),
             },
-        ],
+        ]
+        + (
+            [
+                {
+                    "kind": "internal_git_version",
+                    "file_offset": INNER_GIT_VERSION_OFFSET,
+                    "length": 4,
+                    "before": f"0x{stock_git_version:08X}",
+                    "after": f"0x{BUMPED_GIT_VERSION:08X}",
+                }
+            ]
+            if bump_internal_revision
+            else []
+        )
+        + (
+            [
+                {
+                    "kind": "outer_firmware_revision",
+                    "file_offset": OUTER_FIRMWARE_OFFSET,
+                    "length": len(BUMPED_OUTER_FIRMWARE),
+                    "before": EXPECTED_OUTER_FIRMWARE.decode("ascii"),
+                    "after": BUMPED_OUTER_FIRMWARE.decode("ascii"),
+                }
+            ]
+            if bump_outer_revision
+            else []
+        )
+        + (
+            [
+                {
+                    "kind": "activation_marker",
+                    "file_offset": marker_offset,
+                    "address": DEFAULT_STATUS_ADDRESS,
+                    "length": 2,
+                    "before": DEFAULT_STATUS_ORIGINAL.hex(" "),
+                    "after": DEFAULT_STATUS_MARKER.hex(" "),
+                }
+            ]
+            if add_activation_marker
+            else []
+        ),
         "unplanned_differences": 0,
         "patch_validation": patch_validation,
+        "internal_version": {
+            "stock_raw": f"0x{stock_git_version:08X}",
+            "candidate_raw": f"0x{struct.unpack_from('<I', candidate, INNER_GIT_VERSION_OFFSET)[0]:08X}",
+            "candidate_semantic": "1.4.6" if bump_internal_revision else "1.4.1",
+            "bumped_for_bank_selection": bump_internal_revision,
+        },
+        "outer_firmware_revision": {
+            "candidate": (
+                BUMPED_OUTER_FIRMWARE.decode("ascii")
+                if bump_outer_revision
+                else EXPECTED_OUTER_FIRMWARE.decode("ascii")
+            ),
+            "bumped": bump_outer_revision,
+        },
+        "activation_marker": {
+            "enabled": add_activation_marker,
+            "unknown_a1_status": "0xFD" if add_activation_marker else "0xFF",
+            "custom_hook_status": "0xFE",
+        },
         "boot_integrity_check_enabled": bool(ctrl_flags & (1 << 9)),
         "stored_inner_sha256_unchanged": True,
-        "stored_inner_sha256_all_zero": True,
+        "stored_inner_sha256_all_zero": False,
+        "stored_inner_sha256_requires_regeneration": True,
         "outer_sum32_valid": struct.unpack_from("<I", candidate, 12)[0]
         == (sum(candidate[HEADER_SIZE:]) & 0xFFFFFFFF),
         "flash_allowed": False,
@@ -219,10 +328,17 @@ def main() -> int:
     parser.add_argument("patch", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--allow-unverified-output", action="store_true")
+    parser.add_argument("--bump-internal-revision", action="store_true")
+    parser.add_argument("--bump-outer-revision", action="store_true")
+    parser.add_argument("--activation-marker", action="store_true")
     args = parser.parse_args()
 
     candidate, report = build_candidate(
-        validated_stock(args.stock), args.patch.read_bytes()
+        validated_stock(args.stock),
+        args.patch.read_bytes(),
+        bump_internal_revision=args.bump_internal_revision,
+        bump_outer_revision=args.bump_outer_revision,
+        add_activation_marker=args.activation_marker,
     )
     if args.output:
         if not args.allow_unverified_output:

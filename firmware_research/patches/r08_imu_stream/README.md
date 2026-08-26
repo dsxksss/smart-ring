@@ -11,7 +11,7 @@
 - Cortex-M0 指令级仿真已覆盖 9 个启动、通知、断连、陈旧数据与停止场景；原厂 `0x0083394E` 消费者在启用标志非零时会先调用 `0x00832F9C` 排空 FIFO，不会只反复读取旧 RAM；
 - 原厂 timer 包装和 Realtek 公开接口形态相互吻合，且目标固件已有 callback 内停止同一 timer 的路径；目标 RTL8762E SDK 的精确返回类型和真实 RTOS 时序仍需用官方 SDK 及非唯一硬件验证；
 - 原厂状态机本身顺序调用 `0x00832CBC` / `0x008335FC` 停止 FIFO 与待机，静态路径吻合；仍需真机功耗验证；
-- 恢复精确 Flash map、OTA 写入/回退行为和独立 UART/SWD 回滚路径。内层 SHA 字段已纠正到 `0x394`，原厂值全零且 boot integrity 位关闭。
+- 恢复精确 Flash map、OTA 写入/回退行为和独立 UART/SWD 回滚路径。内层 SHA 字段已纠正到 `0x174`，修改正文后必须用哈希锁定的官方 SDK `prepend_header.exe` 重新生成；boot integrity 位关闭并不代表 OTA 的 `check_image_chksum` 会跳过摘要验证。
 
 构建：
 

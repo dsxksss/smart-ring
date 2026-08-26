@@ -25,7 +25,7 @@
 
 ```powershell
 python firmware_research\scripts\analyze_rt08_software_recovery.py `
-  research_artifacts\firmware\RT08_3.10.48_260309.bin
+  path\to\RT08_3.10.48_260309.bin
 ```
 
 ## 软件试运行能覆盖什么

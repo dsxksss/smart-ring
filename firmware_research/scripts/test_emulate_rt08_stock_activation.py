@@ -11,8 +11,9 @@ from emulate_rt08_stock_activation import validate_activation
 UNICORN_AVAILABLE = importlib.util.find_spec("unicorn") is not None
 STOCK = (
     Path(__file__).resolve().parents[2]
-    / "research_artifacts"
-    / "firmware"
+    / "firmware_research"
+    / "evidence"
+    / "ota"
     / "RT08_3.10.48_260309.bin"
 )
 
