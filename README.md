@@ -35,6 +35,7 @@ Windows 请在“以管理员身份运行”的 PowerShell 或命令提示符中
 | `r08 device-info` | 只读 Device Information，不写特征 |
 | `r08 sensor-record` | 临时开启已知的 `A1 03` 三轴通知并保存 CSV；不发送 DFU |
 | `r08 sensor-stop` | 只发送 `A1 02`，用于关闭原始传感器模式和闪烁的 LED |
+| `r08 imu-stream` | 仅用于未刷入的 IMU 固件候选联调；默认不注入，也不刷写 |
 | `r08 ota-fetch` | 查询 QRing 官方 OTA，并只下载硬件/固件版本精确匹配的镜像；不连接戒指、不发送 DFU |
 | `r08 listen` | 打开触控通知并记录动作，**不注入** |
 | `r08 disable-touch` | 发送官方 `0x3B` 关闭触控 |
@@ -52,6 +53,14 @@ Windows 请在“以管理员身份运行”的 PowerShell 或命令提示符中
 - **macOS**：GATT（Core Bluetooth）可用。系统 HID 会占用 BLE 鼠标，因此没有逐点相对 Y 跟踪；上下滑走离散 GATT `0x1D`。复制/粘贴为 Command+C / Command+V，需要辅助功能权限。不要把平滑拆步说成真实触摸跟踪。
 
 自定义 GATT `0x1D` 仍是离散动作：`1` 点击、`2` 下滑、`3` 上滑。没有绝对坐标、压力或接触面积。动作 `4/5`、左右滑和长按默认无操作。程序拒绝写入官方 DFU 特征；官方同版本镜像已经保存，但恢复入口仍未验证，因此当前不对刷写做任何承诺。
+
+`imu-stream` 是离线候选配套的故障安全主机路径，不适用于原厂固件。它要求显式确认，默认只校准和记录；即使加 `--inject` 也只发送普通 NUS 控制命令和注入滚轮，不会调用 DFU。当前唯一戒指禁止刷候选，所以现阶段不要把下面命令用于真机期待数据：
+
+```powershell
+.\target\release\r08.exe imu-stream --acknowledge-unverified-candidate
+```
+
+候选协议采用 `A1 09 01/00` 启停、`A2 10` 10 Hz IMU 通知、12 秒固件硬超时和 8 秒主机续期；stale、序号跳变、校验错误、250 ms 无数据或无效重力都会急停并释放输入。详细设计和不可刷原因见 [`firmware_research/RT08_IMU_ONLY_STREAM_DESIGN_20260826.md`](firmware_research/RT08_IMU_ONLY_STREAM_DESIGN_20260826.md)。
 
 ## 三轴传感器可观测性测试（不刷固件）
 

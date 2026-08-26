@@ -19,7 +19,11 @@ VENDORED_BLEAK = PROJECT_ROOT / "tmp" / "bleak-runtime"
 if VENDORED_BLEAK.is_dir():
     sys.path.insert(0, str(VENDORED_BLEAK))
 
-from bleak import BleakClient, BleakScanner  # noqa: E402
+try:
+    from bleak import BleakClient, BleakScanner  # noqa: E402
+except ModuleNotFoundError:  # Keep protocol-only unit tests runnable offline.
+    BleakClient = None  # type: ignore[assignment,misc]
+    BleakScanner = None  # type: ignore[assignment,misc]
 
 from analyze_sensor_csv import analyze_file  # noqa: E402
 
@@ -58,6 +62,8 @@ def decode_accelerometer(data: bytes) -> tuple[int, int, int] | None:
 
 
 async def find_ring(timeout_seconds: float) -> object | None:
+    if BleakScanner is None:
+        raise RuntimeError("缺少 bleak；请先安装 requirements.txt 后再连接设备")
     found = asyncio.Event()
     ring = None
 
@@ -95,6 +101,8 @@ async def find_ring(timeout_seconds: float) -> object | None:
 
 
 async def connect_ring(device: object) -> BleakClient:
+    if BleakClient is None:
+        raise RuntimeError("缺少 bleak；请先安装 requirements.txt 后再连接设备")
     errors: list[str] = []
     for address_type in (None, "random", "public"):
         winrt = {} if address_type is None else {"address_type": address_type}

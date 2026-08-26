@@ -10,6 +10,7 @@ from analyze_rt08_thumb import (
     HEADER_SIZE,
     address_to_file_offset,
     decode_thumb_bl,
+    encode_thumb_bl,
     file_offset_to_address,
     find_bl_callers,
     find_thumb_ldr_literal_value_sites,
@@ -21,9 +22,12 @@ from analyze_rt08_thumb import (
 
 
 def synthetic_image() -> bytes:
-    payload = bytearray(512)
-    payload[0x20 : 0x20 + len(b"RT08_V3.1\0")] = b"RT08_V3.1\0"
-    string_offset = 0x100
+    payload = bytearray(0x600)
+    struct.pack_into("<BBHHHI", payload, 0, 12, 0, 0x181, 0x2793, 0, len(payload) - 0x400)
+    struct.pack_into("<III", payload, 0x1C, APPLICATION_BASE + 0x400, APPLICATION_BASE + 0x400, 0)
+    struct.pack_into("<I", payload, 0x28, APPLICATION_BASE)
+    payload[0x60 : 0x60 + len(b"RT08_V3.1\0")] = b"RT08_V3.1\0"
+    string_offset = 0x500
     anchor = APPLICATION_BASE + 0x80 + 1
     struct.pack_into("<I", payload, string_offset - 4, anchor)
     payload[string_offset : string_offset + len(b"gsensor_timer\0")] = b"gsensor_timer\0"
@@ -104,6 +108,13 @@ class AnalyzerTests(unittest.TestCase):
             },
             find_thumb_imm8_sites(bytes(data), 0x3B),
         )
+
+    def test_encodes_thumb_bl_round_trip(self) -> None:
+        address = 0x008280F6
+        target = 0x00849B08
+        encoded = encode_thumb_bl(address, target)
+        first, second = struct.unpack("<HH", encoded)
+        self.assertEqual(decode_thumb_bl(address, first, second), target)
 
     def test_finds_thumb_ldr_literal_value_sites(self) -> None:
         data = bytearray(synthetic_image())

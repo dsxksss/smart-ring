@@ -3,9 +3,15 @@ from __future__ import annotations
 import struct
 import unittest
 
-from analyze_rt08_thumb import HEADER_SIZE
+from analyze_rt08_thumb import (
+    APPLICATION_BASE,
+    HEADER_SIZE,
+    REALTEK_IMAGE_HEADER_SIZE,
+    address_to_file_offset,
+)
 from patch_rt08_gesture_strength import (
     ORIGINAL_BYTES,
+    PATCH_ADDRESS,
     PATCHED_BYTES,
     PATCH_FILE_OFFSET,
     apply_strength_patch,
@@ -15,7 +21,11 @@ from patch_rt08_gesture_strength import (
 def synthetic_patchable_image() -> bytes:
     payload_length = PATCH_FILE_OFFSET + len(ORIGINAL_BYTES) - HEADER_SIZE + 32
     payload = bytearray(payload_length)
-    payload[0x20 : 0x20 + len(b"RT08_V3.1\0")] = b"RT08_V3.1\0"
+    payload[0] = 12
+    struct.pack_into("<I", payload, 8, payload_length - REALTEK_IMAGE_HEADER_SIZE)
+    struct.pack_into("<I", payload, 0x1C, APPLICATION_BASE + REALTEK_IMAGE_HEADER_SIZE)
+    struct.pack_into("<I", payload, 0x28, APPLICATION_BASE)
+    payload[0x300 : 0x300 + len(b"RT08_V3.1\0")] = b"RT08_V3.1\0"
     payload_offset = PATCH_FILE_OFFSET - HEADER_SIZE
     payload[payload_offset : payload_offset + len(ORIGINAL_BYTES)] = ORIGINAL_BYTES
     header = bytearray(HEADER_SIZE)
@@ -25,6 +35,12 @@ def synthetic_patchable_image() -> bytes:
 
 
 class GestureStrengthPatchTests(unittest.TestCase):
+    def test_patch_address_maps_to_pinned_file_offset(self) -> None:
+        stock = synthetic_patchable_image()
+        self.assertEqual(
+            address_to_file_offset(PATCH_ADDRESS, len(stock)), PATCH_FILE_OFFSET
+        )
+
     def test_patches_expected_instructions_and_sum32(self) -> None:
         stock = synthetic_patchable_image()
         patched = apply_strength_patch(stock, enforce_stock_hash=False)

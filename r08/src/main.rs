@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use r08::ble::{self, has_adapter};
 use r08::identity::RING_NAME;
+use r08::imu_scroll::{self, ImuStreamOptions, ImuWheelConfig, RotationPlane};
 use r08::ota::{self, OtaFetchOptions, OtaRegion};
 use r08::platform;
 use r08::protocol::{parse_hex_payload, reject_if_dfu, NORDIC_UART_WRITE};
@@ -57,6 +58,28 @@ enum Command {
     },
     /// Send only the known A1 02 raw-sensor stop packet. Never sends DFU.
     SensorStop,
+    /// Exercise the offline candidate's A2/10 IMU stream. Does not flash firmware.
+    ImuStream {
+        /// Required safety acknowledgement; stock firmware does not implement A1 09.
+        #[arg(long)]
+        acknowledge_unverified_candidate: bool,
+        /// Actually inject wheel events. Omit for listen/calibration-only mode.
+        #[arg(long)]
+        inject: bool,
+        #[arg(long, default_value_t = 60)]
+        seconds: u64,
+        /// Gravity rotation plane: xy, xz, or yz.
+        #[arg(long, default_value = "xz")]
+        plane: String,
+        #[arg(long)]
+        invert: bool,
+        #[arg(long, default_value_t = 6.0)]
+        deadzone: f64,
+        #[arg(long, default_value_t = 40.0)]
+        full_speed: f64,
+        #[arg(long, default_value_t = 1.0)]
+        gain: f64,
+    },
     /// Query the official QRing OTA service and optionally download an exact matching image. Never sends DFU.
     OtaFetch {
         /// Use the global OTA service instead of the default mainland China service.
@@ -121,7 +144,7 @@ async fn main() -> Result<()> {
     let command = cli.command.unwrap_or_else(default_command);
     let logging = matches!(
         &command,
-        Command::Control { .. } | Command::Interactive { .. }
+        Command::Control { .. } | Command::Interactive { .. } | Command::ImuStream { .. }
     );
     init_tracing(logging)?;
     match command {
@@ -198,6 +221,42 @@ async fn main() -> Result<()> {
             disconnect_result?;
             println!("已发送 A1 02，原始传感器模式应已关闭");
             Ok(())
+        }
+        Command::ImuStream {
+            acknowledge_unverified_candidate,
+            inject,
+            seconds,
+            plane,
+            invert,
+            deadzone,
+            full_speed,
+            gain,
+        } => {
+            if !acknowledge_unverified_candidate {
+                anyhow::bail!(
+                    "拒绝发送候选命令：必须显式添加 --acknowledge-unverified-candidate；此命令不刷固件，但仅适用于已验证安装候选固件的测试设备"
+                );
+            }
+            let config = ImuWheelConfig {
+                plane: plane.parse::<RotationPlane>()?,
+                invert,
+                deadzone_degrees: deadzone,
+                full_speed_degrees: full_speed,
+                gain,
+            }
+            .validate()?;
+            println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
+            println!("该命令不会刷写固件；将发送候选 A1 09 启停命令，任何异常均急停。按 Enter 或 Ctrl+C 退出。");
+            let connection = ble::connect_fresh(30).await?;
+            imu_scroll::run(
+                connection,
+                ImuStreamOptions {
+                    seconds,
+                    inject,
+                    config,
+                },
+            )
+            .await
         }
         Command::OtaFetch {
             global,

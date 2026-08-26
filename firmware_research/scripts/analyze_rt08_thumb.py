@@ -15,7 +15,9 @@ from typing import Any
 
 CONTAINER_MAGIC = bytes.fromhex("e5 c3 bd 81")
 HEADER_SIZE = 0x50
-APPLICATION_BASE = 0x00824000
+REALTEK_IMAGE_HEADER_SIZE = 0x400
+RTL8762E_IC_TYPE = 12
+APPLICATION_BASE = 0x00826000
 PRINTABLE_PATTERN = re.compile(rb"[\x20-\x7e]{4,}")
 NUMERIC_OPERAND_PATTERN = re.compile(r"(?:#)?(0x[0-9a-fA-F]+|\d+)$")
 LDR_LITERAL_PATTERN = re.compile(
@@ -30,7 +32,7 @@ def parse_int(value: str) -> int:
 def load_image(path: Path) -> bytes:
     data = path.read_bytes()
     if len(data) < HEADER_SIZE or data[:4] != CONTAINER_MAGIC:
-        raise ValueError("not a recognized 0x50 RF03 OTA container")
+        raise ValueError("not a recognized QRing 0x50 OTA container")
     length_a, length_b, stored_sum = struct.unpack_from("<III", data, 4)
     payload = data[HEADER_SIZE:]
     if length_a != length_b or length_a != len(payload):
@@ -39,6 +41,22 @@ def load_image(path: Path) -> bytes:
         raise ValueError("container sum32 does not match")
     if b"RT08_V3.1" not in data:
         raise ValueError("image does not contain the exact RT08_V3.1 marker")
+    if len(payload) < REALTEK_IMAGE_HEADER_SIZE:
+        raise ValueError("payload is shorter than the RTL8762E 1024-byte image header")
+    ic_type = payload[0]
+    inner_payload_length = struct.unpack_from("<I", payload, 8)[0]
+    exe_base = struct.unpack_from("<I", payload, 0x1C)[0]
+    image_base_candidate = struct.unpack_from("<I", payload, 0x28)[0]
+    if ic_type != RTL8762E_IC_TYPE:
+        raise ValueError(f"unexpected Realtek IC type {ic_type}; expected 12 for RTL8762E")
+    if inner_payload_length != len(payload) - REALTEK_IMAGE_HEADER_SIZE:
+        raise ValueError("RTL8762E inner payload length does not match")
+    if image_base_candidate != APPLICATION_BASE:
+        raise ValueError(
+            f"unexpected RTL8762E image base 0x{image_base_candidate:08x}"
+        )
+    if exe_base != APPLICATION_BASE + REALTEK_IMAGE_HEADER_SIZE:
+        raise ValueError(f"unexpected RTL8762E executable base 0x{exe_base:08x}")
     return data
 
 
@@ -125,6 +143,26 @@ def decode_thumb_bl(address: int, first_halfword: int, second_halfword: int) -> 
     if sign:
         immediate -= 1 << 25
     return (address + 4 + immediate) & 0xFFFFFFFF
+
+
+def encode_thumb_bl(address: int, target: int) -> bytes:
+    """Encode an ARMv6-M compatible Thumb BL immediate."""
+    address &= ~1
+    target &= ~1
+    displacement = target - (address + 4)
+    if displacement & 1 or not -(1 << 24) <= displacement < (1 << 24):
+        raise ValueError("Thumb BL target is unaligned or out of range")
+    immediate = displacement & ((1 << 25) - 1)
+    sign = (immediate >> 24) & 1
+    i1 = (immediate >> 23) & 1
+    i2 = (immediate >> 22) & 1
+    j1 = 1 ^ (i1 ^ sign)
+    j2 = 1 ^ (i2 ^ sign)
+    imm10 = (immediate >> 12) & 0x3FF
+    imm11 = (immediate >> 1) & 0x7FF
+    first = 0xF000 | (sign << 10) | imm10
+    second = 0xD000 | (j1 << 13) | (j2 << 11) | imm11
+    return struct.pack("<HH", first, second)
 
 
 def find_bl_callers(data: bytes, target: int) -> list[dict[str, int | str]]:
@@ -292,7 +330,7 @@ def disassemble(
 def image_summary(data: bytes) -> dict[str, Any]:
     payload_length = len(data) - HEADER_SIZE
     return {
-        "container": "rf03-0x50-sum32",
+        "container": "qring-0x50-sum32",
         "file_size": len(data),
         "payload_length": payload_length,
         "application_base": APPLICATION_BASE,
@@ -303,7 +341,7 @@ def image_summary(data: bytes) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Read-only RT08 RF03 address and Thumb analysis"
+        description="Read-only RT08 RTL8762E address and Thumb analysis"
     )
     parser.add_argument("image", type=Path)
     parser.add_argument("--find", action="append", default=[])

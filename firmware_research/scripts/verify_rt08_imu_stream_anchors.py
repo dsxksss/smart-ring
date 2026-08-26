@@ -15,23 +15,23 @@ from analyze_rt08_thumb import address_to_file_offset, image_summary, load_image
 EXPECTED_SHA256 = "c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b"
 
 ANCHORS = (
-    ("lis3dh_25hz_ctrl1", 0x00830D32, "37 21 20 20 ff f7 f7 fd"),
-    ("lis3dh_fifo_enable", 0x00830D42, "40 21 24 20 ff f7 ef fd"),
+    ("lis3dh_25hz_ctrl1", 0x00832D32, "37 21 20 20 ff f7 f7 fd"),
+    ("lis3dh_fifo_enable", 0x00832D42, "40 21 24 20 ff f7 ef fd"),
     (
         "lis3dh_fifo_stream",
-        0x00830D4A,
+        0x00832D4A,
         "00 21 2e 20 ff f7 eb fd 80 21 2e 20 ff f7 e7 fd",
     ),
-    ("lis3dh_50hz_int1", 0x0083168C, "47 21 20 20 ff f7 4a f9"),
-    ("read_timer_activity_state", 0x00831822, "60 79 00 28 0e d0"),
-    ("read_timer_fifo_drain", 0x0083186A, "ff f7 97 fb"),
-    ("shake_remote_action_2", 0x00831BA2, "02 20 f9 f7 30 fc"),
-    ("read_and_shake_timer_create", 0x00831CF0, "ff f7 1e f9 01 20 02 46 00 90"),
-    ("a1_xyz_ring_consumer", 0x00825E6E, "07 aa 09 a9 08 a8 0b f0 6b fd"),
-    ("a1_xyz_subtype", 0x00825E78, "03 20 69 46 48 71"),
-    ("a1_xyz_notify", 0x00825ED0, "02 f0 96 fe 69 46 c8 74 01 a8 06 f0 4b fd"),
-    ("remote_packet_builder", 0x0082B408, "1f b5 00 21 00 91 01 91"),
-    ("a1_common_packer_call", 0x008262E8, "00 20 ff f7 5e fd"),
+    ("lis3dh_50hz_int1", 0x0083368C, "47 21 20 20 ff f7 4a f9"),
+    ("read_timer_activity_state", 0x00833822, "60 79 00 28 0e d0"),
+    ("read_timer_fifo_drain", 0x0083386A, "ff f7 97 fb"),
+    ("shake_remote_action_2", 0x00833BA2, "02 20 f9 f7 30 fc"),
+    ("read_and_shake_timer_create", 0x00833CF0, "ff f7 1e f9 01 20 02 46 00 90"),
+    ("a1_xyz_ring_consumer", 0x00827E6E, "07 aa 09 a9 08 a8 0b f0 6b fd"),
+    ("a1_xyz_subtype", 0x00827E78, "03 20 69 46 48 71"),
+    ("a1_xyz_notify", 0x00827ED0, "02 f0 96 fe 69 46 c8 74 01 a8 06 f0 4b fd"),
+    ("remote_packet_builder", 0x0082D408, "1f b5 00 21 00 91 01 91"),
+    ("a1_common_packer_call", 0x008282E8, "00 20 ff f7 5e fd"),
 )
 
 

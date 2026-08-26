@@ -15,6 +15,7 @@ pub const IMU_STREAM_FLAG_STALE: u8 = 1 << 1;
 pub const IMU_STREAM_FLAG_FIFO_OVERFLOW: u8 = 1 << 2;
 pub const IMU_STREAM_FLAG_ENDING: u8 = 1 << 3;
 pub const IMU_STREAM_NO_DATA_TIMEOUT_MS: u64 = 250;
+pub const IMU_STREAM_COMMAND: u8 = 0x09;
 
 pub const NORDIC_UART_SERVICE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6e40fff0_b5a3_f393_e0a9_e50e24dcca9e);
@@ -122,6 +123,18 @@ pub fn raw_sensor_stop_packet() -> [u8; COLMI_PACKET_LEN] {
 
 pub fn raw_sensor_start_packet() -> [u8; COLMI_PACKET_LEN] {
     build_colmi_packet(&[0xA1, 0x04, 0x04]).expect("raw start")
+}
+
+/// Start the experimental IMU-only stream implemented by the offline R08
+/// candidate. Stock firmware does not implement this command.
+pub fn imu_stream_start_packet() -> [u8; COLMI_PACKET_LEN] {
+    build_colmi_packet(&[0xA1, IMU_STREAM_COMMAND, 0x01]).expect("imu stream start")
+}
+
+/// Stop the experimental IMU-only stream. The candidate also has an on-device
+/// watchdog, but the host always sends this on normal and error exits.
+pub fn imu_stream_stop_packet() -> [u8; COLMI_PACKET_LEN] {
+    build_colmi_packet(&[0xA1, IMU_STREAM_COMMAND, 0x00]).expect("imu stream stop")
 }
 
 pub fn is_dfu_uuid(uuid: uuid::Uuid) -> bool {
@@ -239,9 +252,9 @@ pub fn evaluate_imu_stream_packet(data: &[u8], last_sequence: Option<u8>) -> Imu
         sequence,
         flags,
         acceleration: AccelerometerSample {
-            x: i16::from_be_bytes([data[4], data[5]]),
-            y: i16::from_be_bytes([data[6], data[7]]),
-            z: i16::from_be_bytes([data[8], data[9]]),
+            x: i16::from_le_bytes([data[4], data[5]]),
+            y: i16::from_le_bytes([data[6], data[7]]),
+            z: i16::from_le_bytes([data[8], data[9]]),
         },
         fifo_level: data[10],
         dropped_samples: data[11],
@@ -548,20 +561,20 @@ mod tests {
         flags: u8,
         acceleration: AccelerometerSample,
     ) -> [u8; COLMI_PACKET_LEN] {
-        let [x_hi, x_lo] = acceleration.x.to_be_bytes();
-        let [y_hi, y_lo] = acceleration.y.to_be_bytes();
-        let [z_hi, z_lo] = acceleration.z.to_be_bytes();
+        let [x_lo, x_hi] = acceleration.x.to_le_bytes();
+        let [y_lo, y_hi] = acceleration.y.to_le_bytes();
+        let [z_lo, z_hi] = acceleration.z.to_le_bytes();
         build_colmi_packet(&[
             IMU_STREAM_HEADER,
             IMU_STREAM_SAMPLE_V1,
             sequence,
             flags,
-            x_hi,
             x_lo,
-            y_hi,
+            x_hi,
             y_lo,
-            z_hi,
+            y_hi,
             z_lo,
+            z_hi,
             12,
             3,
             0,

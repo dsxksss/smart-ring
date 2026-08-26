@@ -17,8 +17,12 @@ EXPECTED_HARDWARE = "RT08_V3.1"
 EXPECTED_FIRMWARE_PREFIX = "RT08_"
 KNOWN_CONTAINER_MAGIC = bytes.fromhex("e5 c3 bd 81")
 KNOWN_HEADER_SIZE = 0x50
-RF03_APPLICATION_BASE = 0x00824000
-RF03_SOURCE_MARKERS = (
+REALTEK_IMAGE_HEADER_SIZE = 0x400
+RTL8762E_IC_TYPE = 12
+RTL8762E_APPLICATION_BASE = 0x00826000
+# T_IMG_HEADER_FORMAT is 1024 bytes and ends with sha256[32], rsvd2[76].
+RTL8762E_SHA256_OFFSET = REALTEK_IMAGE_HEADER_SIZE - 76 - 32
+RTL8762E_SOURCE_MARKERS = (
     b"qc_code\\app_module\\gsensor\\lis3dh_spi.c",
     b"Error! Please implement your ISR Handler",
 )
@@ -70,7 +74,7 @@ def inspect_known_container(data: bytes) -> dict[str, Any] | None:
     payload = data[KNOWN_HEADER_SIZE:]
     calculated_sum32 = sum(payload) & 0xFFFFFFFF
     return {
-        "format": "colmi-0x50-sum32-candidate",
+        "format": "qring-0x50-sum32",
         "header_size": KNOWN_HEADER_SIZE,
         "length_a": length_a,
         "length_b": length_b,
@@ -83,32 +87,86 @@ def inspect_known_container(data: bytes) -> dict[str, Any] | None:
     }
 
 
-def inspect_rf03_application(data: bytes) -> dict[str, Any]:
+def inspect_rtl8762e_application(data: bytes) -> dict[str, Any]:
     payload = data[KNOWN_HEADER_SIZE:]
-    application_end = RF03_APPLICATION_BASE + len(payload)
+    if len(payload) < REALTEK_IMAGE_HEADER_SIZE:
+        return {"candidate": False, "reason": "payload is shorter than 1024-byte image header"}
+
+    ic_type, secure_version, ctrl_flags, image_id, crc16, payload_length = (
+        struct.unpack_from("<BBHHHI", payload, 0)
+    )
+    uuid = payload[0x0C:0x1C]
+    exe_base, load_base, load_length = struct.unpack_from("<III", payload, 0x1C)
+    # This word is documented as reserved in the public SDK guide, but the stock
+    # R08 image stores 0x00826000 here.  The following executable bytes begin at
+    # +0x400 and contain a Thumb veneer to 0x00826665, so treat it as an image-base
+    # candidate while retaining the distinction from an officially named field.
+    image_base_candidate = struct.unpack_from("<I", payload, 0x28)[0]
+    application_end = image_base_candidate + len(payload)
+    body = payload[REALTEK_IMAGE_HEADER_SIZE:]
+    stored_sha256 = payload[
+        RTL8762E_SHA256_OFFSET : RTL8762E_SHA256_OFFSET + hashlib.sha256().digest_size
+    ]
+    calculated_body_sha256 = hashlib.sha256(body).digest()
     thumb_entry_pointers: list[int] = []
     for offset in range(0, len(data) - 3, 4):
         value = struct.unpack_from("<I", data, offset)[0]
         if (
             value & 1
-            and RF03_APPLICATION_BASE <= (value & ~1) < application_end
+            and image_base_candidate <= (value & ~1) < application_end
         ):
             thumb_entry_pointers.append(value)
     source_markers = [
-        marker.decode("ascii") for marker in RF03_SOURCE_MARKERS if marker in data
+        marker.decode("ascii") for marker in RTL8762E_SOURCE_MARKERS if marker in data
     ]
-    candidate = len(thumb_entry_pointers) >= 20 and bool(source_markers)
+    header_consistent = (
+        ic_type == RTL8762E_IC_TYPE
+        and payload_length == len(body)
+        and image_base_candidate == RTL8762E_APPLICATION_BASE
+        and exe_base == image_base_candidate + REALTEK_IMAGE_HEADER_SIZE
+    )
+    candidate = header_consistent and len(thumb_entry_pointers) >= 20 and bool(source_markers)
     return {
         "candidate": candidate,
-        "application_base_candidate": RF03_APPLICATION_BASE,
+        "ic_type": ic_type,
+        "ic_type_matches_rtl8762e": ic_type == RTL8762E_IC_TYPE,
+        "secure_version": secure_version,
+        "ctrl_flags": ctrl_flags,
+        "ctrl_flag_bits": {
+            "xip": bool(ctrl_flags & (1 << 0)),
+            "encrypted": bool(ctrl_flags & (1 << 1)),
+            "load_when_boot": bool(ctrl_flags & (1 << 2)),
+            "encrypted_load": bool(ctrl_flags & (1 << 3)),
+            "not_ready": bool(ctrl_flags & (1 << 7)),
+            "not_obsolete": bool(ctrl_flags & (1 << 8)),
+            "integrity_check_en_in_boot": bool(ctrl_flags & (1 << 9)),
+        },
+        "image_id": image_id,
+        "crc16": crc16,
+        "payload_length": payload_length,
+        "actual_body_length": len(body),
+        "payload_length_matches": payload_length == len(body),
+        "uuid": uuid.hex(),
+        "exe_base": exe_base,
+        "load_base": load_base,
+        "load_length": load_length,
+        "application_base_candidate": image_base_candidate,
         "application_end_candidate": application_end,
+        "body_start_matches_exe_base": (
+            exe_base == image_base_candidate + REALTEK_IMAGE_HEADER_SIZE
+        ),
+        "stored_sha256": stored_sha256.hex(),
+        "calculated_body_sha256": calculated_body_sha256.hex(),
+        "body_sha256_matches": stored_sha256 == calculated_body_sha256,
         "thumb_entry_pointer_count": len(thumb_entry_pointers),
         "thumb_entry_pointer_examples": thumb_entry_pointers[:12],
         "source_markers": source_markers,
         "standard_vector_table_expected": False if candidate else None,
+        "sha256_all_zero": not any(stored_sha256),
         "note": (
-            "BlueX RF03 OTA application images can omit the bootloader and standard "
-            "Cortex-M vector table; mapped Thumb entry pointers provide architecture evidence."
+            "The outer QRing wrapper contains an RTL8762E-style 1024-byte application "
+            "header. The official trailing SHA-256 field is at header offset 0x394; "
+            "this stock image leaves it zero while boot integrity checking is disabled."
         ),
     }
 
@@ -122,7 +180,7 @@ def inspect_image(path: Path) -> dict[str, Any]:
         EXPECTED_FIRMWARE_PREFIX in value for value in hardware_strings
     )
     container = inspect_known_container(data)
-    rf03_application = inspect_rf03_application(data)
+    rtl8762e_application = inspect_rtl8762e_application(data)
     result: dict[str, Any] = {
         "path": str(path.resolve()),
         "size": len(data),
@@ -134,7 +192,7 @@ def inspect_image(path: Path) -> dict[str, Any]:
         "firmware_string_found": firmware_string_present,
         "known_container": container,
         "arm_vector_candidates": vector_candidates(data),
-        "rf03_application": rf03_application,
+        "rtl8762e_application": rtl8762e_application,
     }
     reasons: list[str] = []
     if not exact_hardware:
@@ -145,9 +203,9 @@ def inspect_image(path: Path) -> dict[str, Any]:
         reasons.append("container format is not yet recognized")
     elif not container["lengths_match"] or not container["sum32_matches"]:
         reasons.append("container length or checksum validation failed")
-    if not result["arm_vector_candidates"] and not rf03_application["candidate"]:
+    if not result["arm_vector_candidates"] and not rtl8762e_application["candidate"]:
         reasons.append(
-            "neither a Cortex-M vector table nor a mapped BlueX RF03 Thumb application was recognized"
+            "neither a Cortex-M vector table nor a consistent RTL8762E application header was recognized"
         )
     result["offline_patch_candidate"] = not reasons
     result["rejection_reasons"] = reasons

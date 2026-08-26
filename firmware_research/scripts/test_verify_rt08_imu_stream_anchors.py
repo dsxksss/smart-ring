@@ -8,7 +8,10 @@ from verify_rt08_imu_stream_anchors import verify_anchor_bytes
 
 
 def synthetic_image() -> bytes:
-    payload = bytearray(128)
+    payload = bytearray(0x500)
+    struct.pack_into("<BBHHHI", payload, 0, 12, 0, 0x181, 0x2793, 0, len(payload) - 0x400)
+    struct.pack_into("<III", payload, 0x1C, APPLICATION_BASE + 0x400, APPLICATION_BASE + 0x400, 0)
+    struct.pack_into("<I", payload, 0x28, APPLICATION_BASE)
     payload[0x60 : 0x60 + len(b"RT08_V3.1\0")] = b"RT08_V3.1\0"
     header = bytearray(HEADER_SIZE)
     header[:4] = bytes.fromhex("e5 c3 bd 81")

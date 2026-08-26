@@ -1,5 +1,6 @@
 pub mod ble;
 pub mod identity;
+pub mod imu_scroll;
 pub mod mapping;
 pub mod ota;
 pub mod platform;
