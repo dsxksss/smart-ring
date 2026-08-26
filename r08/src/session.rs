@@ -10,7 +10,7 @@ use crate::ble::RingConnection;
 use crate::mapping::{InputEvent, MappingConfig, MappingEngine, Output};
 use crate::platform::inject::{Injector, NullInjector};
 use crate::platform::{create_injector, spawn_hid_monitor};
-use crate::protocol::{touch_disable_packet, touch_enable_packet};
+use crate::protocol::{touch_disable_packet, touch_enable_packet, touch_read_packet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MenuCommand {
@@ -59,7 +59,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
         connection.name,
         connection.address
     );
-    print_menu(touch_enabled, inject_enabled);
+    print_menu(touch_enabled, inject_enabled, &options);
 
     let (command_tx, mut command_rx) = tokio_mpsc::channel::<MenuCommand>(8);
     tokio::spawn(async move {
@@ -151,7 +151,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
                                 Err(error) => tracing::warn!("开启触控失败：{error}"),
                             }
                         }
-                        print_status(touch_enabled, inject_enabled);
+                        print_status(touch_enabled, inject_enabled, &options);
                     }
                     MenuCommand::Control => {
                         if !touch_enabled {
@@ -172,7 +172,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
                                 Err(error) => tracing::warn!("开启电脑控制失败：{error}"),
                             }
                         }
-                        print_status(touch_enabled, inject_enabled);
+                        print_status(touch_enabled, inject_enabled, &options);
                     }
                     MenuCommand::PauseControl => {
                         disable_host_control(
@@ -181,7 +181,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
                             &mut inject_enabled,
                         );
                         tracing::info!("电脑控制已暂停；戒指触控监听保持不变");
-                        print_status(touch_enabled, inject_enabled);
+                        print_status(touch_enabled, inject_enabled, &options);
                     }
                     MenuCommand::DisableTouch => {
                         disable_host_control(
@@ -195,10 +195,18 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
                                 Err(error) => tracing::warn!("关闭触控失败，将在退出时重试：{error}"),
                             }
                         }
-                        print_status(touch_enabled, inject_enabled);
+                        print_status(touch_enabled, inject_enabled, &options);
                     }
-                    MenuCommand::Status => print_status(touch_enabled, inject_enabled),
-                    MenuCommand::Help => print_menu(touch_enabled, inject_enabled),
+                    MenuCommand::Status => {
+                        print_status(touch_enabled, inject_enabled, &options);
+                        match connection.write(&touch_read_packet()).await {
+                            Ok(()) => tracing::info!(
+                                "已请求戒指真实触控状态；请查看随后 RX 中的当前休眠=是/否"
+                            ),
+                            Err(error) => tracing::warn!("读取戒指触控状态失败：{error}"),
+                        }
+                    }
+                    MenuCommand::Help => print_menu(touch_enabled, inject_enabled, &options),
                     MenuCommand::Quit => {
                         tracing::info!("收到退出指令，正在释放按键并关闭触控");
                         break;
@@ -242,15 +250,18 @@ fn parse_menu_command(value: &str) -> MenuCommand {
     }
 }
 
-fn print_menu(touch_enabled: bool, inject_enabled: bool) {
+fn print_menu(touch_enabled: bool, inject_enabled: bool, options: &SessionOptions) {
     println!();
     println!("========== R08 智能戒指控制 ==========");
-    print_status(touch_enabled, inject_enabled);
-    println!("  1  开启触控监听（不控制电脑）");
-    println!("  2  开启电脑控制（自动开启触控）");
+    print_status(touch_enabled, inject_enabled, options);
+    println!(
+        "  1  启用智能触控（双击模式，{} 分钟后自动休眠，仅监听）",
+        options.sleep_minutes
+    );
+    println!("  2  启用智能触控并开启电脑控制");
     println!("  3  暂停电脑控制（保留触控监听）");
-    println!("  4  关闭触控（同时暂停电脑控制）");
-    println!("  5  查看当前状态");
+    println!("  4  完全关闭智能触控（同时暂停电脑控制）");
+    println!("  5  查询电脑端及戒指真实触控/休眠状态");
     println!("  9  重新显示菜单");
     println!("  0  安全退出");
     println!("======================================");
@@ -258,10 +269,12 @@ fn print_menu(touch_enabled: bool, inject_enabled: bool) {
     let _ = io::stdout().flush();
 }
 
-fn print_status(touch_enabled: bool, inject_enabled: bool) {
+fn print_status(touch_enabled: bool, inject_enabled: bool, options: &SessionOptions) {
     println!(
-        "状态：触控={}，电脑控制={}",
-        if touch_enabled { "开启" } else { "关闭" },
+        "状态：智能触控策略={}（应用类型 {}，自动休眠 {} 分钟），电脑控制={}",
+        if touch_enabled { "已启用" } else { "关闭" },
+        options.touch_type,
+        options.sleep_minutes,
         if inject_enabled { "开启" } else { "关闭" }
     );
 }
@@ -277,7 +290,15 @@ async fn set_touch_enabled(
         touch_disable_packet(options.sleep_minutes)
     };
     connection.write(&packet).await?;
-    tracing::info!("戒指触控模式已{}", if enabled { "开启" } else { "关闭" });
+    if enabled {
+        tracing::info!(
+            "智能触控策略已启用：应用类型={}，{} 分钟后自动休眠；双击唤醒由戒指固件处理",
+            options.touch_type,
+            options.sleep_minutes
+        );
+    } else {
+        tracing::info!("智能触控策略已完全关闭");
+    }
     Ok(())
 }
 
