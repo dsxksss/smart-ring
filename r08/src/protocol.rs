@@ -8,6 +8,13 @@ pub const SMOOTH_SCROLL_STEPS_PER_NOTCH: i32 = 3;
 pub const SMOOTH_SCROLL_MAX_QUEUED_STEPS: usize = 60;
 pub const R08_TAP_FLUSH_MS: u64 = 850;
 pub const R08_TAP_DEBOUNCE_MS: u64 = 60;
+pub const IMU_STREAM_HEADER: u8 = 0xA2;
+pub const IMU_STREAM_SAMPLE_V1: u8 = 0x10;
+pub const IMU_STREAM_FLAG_VALID: u8 = 1 << 0;
+pub const IMU_STREAM_FLAG_STALE: u8 = 1 << 1;
+pub const IMU_STREAM_FLAG_FIFO_OVERFLOW: u8 = 1 << 2;
+pub const IMU_STREAM_FLAG_ENDING: u8 = 1 << 3;
+pub const IMU_STREAM_NO_DATA_TIMEOUT_MS: u64 = 250;
 
 pub const NORDIC_UART_SERVICE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6e40fff0_b5a3_f393_e0a9_e50e24dcca9e);
@@ -157,6 +164,141 @@ pub struct AccelerometerSample {
     pub x: i16,
     pub y: i16,
     pub z: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImuStreamSample {
+    pub sequence: u8,
+    pub flags: u8,
+    pub acceleration: AccelerometerSample,
+    pub fifo_level: u8,
+    pub dropped_samples: u8,
+    pub age_ticks: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImuStreamStopReason {
+    BadLength,
+    BadChecksum,
+    InvalidSample,
+    Stale,
+    FifoOverflow,
+    Ending,
+    NoDataTimeout,
+    SequenceGap { expected: u8, received: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImuStreamEvaluation {
+    NotStreamPacket,
+    Sample(ImuStreamSample),
+    Stop(ImuStreamStopReason),
+}
+
+/// Evaluate the proposed A2/10 IMU-only packet without enabling any injection.
+///
+/// The stream is deliberately fail-closed: once an A2/10 packet is recognized,
+/// malformed, stale, overflowing, ending, or non-contiguous data requests an
+/// immediate stop instead of reusing the last motion sample.
+pub fn evaluate_imu_stream_packet(data: &[u8], last_sequence: Option<u8>) -> ImuStreamEvaluation {
+    if data.get(..2) != Some(&[IMU_STREAM_HEADER, IMU_STREAM_SAMPLE_V1]) {
+        return ImuStreamEvaluation::NotStreamPacket;
+    }
+    if data.len() != COLMI_PACKET_LEN {
+        return ImuStreamEvaluation::Stop(ImuStreamStopReason::BadLength);
+    }
+    if !checksum_ok(data) {
+        return ImuStreamEvaluation::Stop(ImuStreamStopReason::BadChecksum);
+    }
+
+    let sequence = data[2];
+    let flags = data[3];
+    if flags & IMU_STREAM_FLAG_ENDING != 0 {
+        return ImuStreamEvaluation::Stop(ImuStreamStopReason::Ending);
+    }
+    if flags & IMU_STREAM_FLAG_STALE != 0 {
+        return ImuStreamEvaluation::Stop(ImuStreamStopReason::Stale);
+    }
+    if flags & IMU_STREAM_FLAG_FIFO_OVERFLOW != 0 {
+        return ImuStreamEvaluation::Stop(ImuStreamStopReason::FifoOverflow);
+    }
+    if flags & IMU_STREAM_FLAG_VALID == 0 {
+        return ImuStreamEvaluation::Stop(ImuStreamStopReason::InvalidSample);
+    }
+    if let Some(last_sequence) = last_sequence {
+        let expected = last_sequence.wrapping_add(1);
+        if sequence != expected {
+            return ImuStreamEvaluation::Stop(ImuStreamStopReason::SequenceGap {
+                expected,
+                received: sequence,
+            });
+        }
+    }
+
+    ImuStreamEvaluation::Sample(ImuStreamSample {
+        sequence,
+        flags,
+        acceleration: AccelerometerSample {
+            x: i16::from_be_bytes([data[4], data[5]]),
+            y: i16::from_be_bytes([data[6], data[7]]),
+            z: i16::from_be_bytes([data[8], data[9]]),
+        },
+        fifo_level: data[10],
+        dropped_samples: data[11],
+        age_ticks: u16::from_be_bytes([data[12], data[13]]),
+    })
+}
+
+#[derive(Debug, Default)]
+pub struct ImuStreamTracker {
+    active: bool,
+    last_sequence: Option<u8>,
+    last_sample_at_ms: Option<u64>,
+}
+
+impl ImuStreamTracker {
+    pub fn start(&mut self, now_ms: u64) {
+        self.active = true;
+        self.last_sequence = None;
+        self.last_sample_at_ms = Some(now_ms);
+    }
+
+    pub fn stop(&mut self) {
+        self.active = false;
+        self.last_sequence = None;
+        self.last_sample_at_ms = None;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn ingest(&mut self, data: &[u8], now_ms: u64) -> ImuStreamEvaluation {
+        let evaluation = evaluate_imu_stream_packet(data, self.last_sequence);
+        match evaluation {
+            ImuStreamEvaluation::Sample(sample) => {
+                if self.active {
+                    self.last_sequence = Some(sample.sequence);
+                    self.last_sample_at_ms = Some(now_ms);
+                }
+            }
+            ImuStreamEvaluation::Stop(_) => self.stop(),
+            ImuStreamEvaluation::NotStreamPacket => {}
+        }
+        evaluation
+    }
+
+    pub fn check_timeout(&mut self, now_ms: u64) -> Option<ImuStreamStopReason> {
+        if !self.active {
+            return None;
+        }
+        let last_sample_at_ms = self.last_sample_at_ms.unwrap_or(now_ms);
+        if now_ms.saturating_sub(last_sample_at_ms) < IMU_STREAM_NO_DATA_TIMEOUT_MS {
+            return None;
+        }
+        self.stop();
+        Some(ImuStreamStopReason::NoDataTimeout)
+    }
 }
 
 pub fn decode_accelerometer_packet(data: &[u8]) -> Option<AccelerometerSample> {
@@ -399,6 +541,153 @@ mod tests {
         packet[0] = 0xA1;
         packet[1] = 0x03;
         assert_eq!(decode_accelerometer_packet(&packet), None);
+    }
+
+    fn imu_stream_packet(
+        sequence: u8,
+        flags: u8,
+        acceleration: AccelerometerSample,
+    ) -> [u8; COLMI_PACKET_LEN] {
+        let [x_hi, x_lo] = acceleration.x.to_be_bytes();
+        let [y_hi, y_lo] = acceleration.y.to_be_bytes();
+        let [z_hi, z_lo] = acceleration.z.to_be_bytes();
+        build_colmi_packet(&[
+            IMU_STREAM_HEADER,
+            IMU_STREAM_SAMPLE_V1,
+            sequence,
+            flags,
+            x_hi,
+            x_lo,
+            y_hi,
+            y_lo,
+            z_hi,
+            z_lo,
+            12,
+            3,
+            0,
+            25,
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn evaluates_proposed_imu_stream_packet_without_injection() {
+        let acceleration = AccelerometerSample {
+            x: -444,
+            y: 264,
+            z: 100,
+        };
+        let packet = imu_stream_packet(7, IMU_STREAM_FLAG_VALID, acceleration);
+        assert_eq!(
+            evaluate_imu_stream_packet(&packet, Some(6)),
+            ImuStreamEvaluation::Sample(ImuStreamSample {
+                sequence: 7,
+                flags: IMU_STREAM_FLAG_VALID,
+                acceleration,
+                fifo_level: 12,
+                dropped_samples: 3,
+                age_ticks: 25,
+            })
+        );
+    }
+
+    #[test]
+    fn imu_stream_sequence_wrap_is_contiguous() {
+        let packet = imu_stream_packet(
+            0,
+            IMU_STREAM_FLAG_VALID,
+            AccelerometerSample { x: 0, y: 0, z: 0 },
+        );
+        assert!(matches!(
+            evaluate_imu_stream_packet(&packet, Some(255)),
+            ImuStreamEvaluation::Sample(_)
+        ));
+    }
+
+    #[test]
+    fn imu_stream_fail_closed_conditions_request_stop() {
+        let sample = AccelerometerSample { x: 1, y: 2, z: 3 };
+        for (flags, reason) in [
+            (0, ImuStreamStopReason::InvalidSample),
+            (
+                IMU_STREAM_FLAG_VALID | IMU_STREAM_FLAG_STALE,
+                ImuStreamStopReason::Stale,
+            ),
+            (
+                IMU_STREAM_FLAG_VALID | IMU_STREAM_FLAG_FIFO_OVERFLOW,
+                ImuStreamStopReason::FifoOverflow,
+            ),
+            (
+                IMU_STREAM_FLAG_VALID | IMU_STREAM_FLAG_ENDING,
+                ImuStreamStopReason::Ending,
+            ),
+        ] {
+            let packet = imu_stream_packet(4, flags, sample);
+            assert_eq!(
+                evaluate_imu_stream_packet(&packet, Some(3)),
+                ImuStreamEvaluation::Stop(reason)
+            );
+        }
+
+        let packet = imu_stream_packet(4, IMU_STREAM_FLAG_VALID, sample);
+        assert_eq!(
+            evaluate_imu_stream_packet(&packet, Some(1)),
+            ImuStreamEvaluation::Stop(ImuStreamStopReason::SequenceGap {
+                expected: 2,
+                received: 4,
+            })
+        );
+
+        let mut bad_checksum = packet;
+        bad_checksum[15] ^= 1;
+        assert_eq!(
+            evaluate_imu_stream_packet(&bad_checksum, Some(3)),
+            ImuStreamEvaluation::Stop(ImuStreamStopReason::BadChecksum)
+        );
+        assert_eq!(
+            evaluate_imu_stream_packet(&packet[..15], Some(3)),
+            ImuStreamEvaluation::Stop(ImuStreamStopReason::BadLength)
+        );
+        assert_eq!(
+            evaluate_imu_stream_packet(&[0x02, 0x02], None),
+            ImuStreamEvaluation::NotStreamPacket
+        );
+    }
+
+    #[test]
+    fn imu_stream_tracker_stops_after_250ms_without_data() {
+        let mut tracker = ImuStreamTracker::default();
+        tracker.start(1_000);
+        assert!(tracker.is_active());
+        assert_eq!(tracker.check_timeout(1_249), None);
+        assert_eq!(
+            tracker.check_timeout(1_250),
+            Some(ImuStreamStopReason::NoDataTimeout)
+        );
+        assert!(!tracker.is_active());
+    }
+
+    #[test]
+    fn imu_stream_tracker_resets_deadline_and_sequence_on_valid_sample() {
+        let mut tracker = ImuStreamTracker::default();
+        tracker.start(1_000);
+        let sample = AccelerometerSample { x: 1, y: 2, z: 3 };
+        let first = imu_stream_packet(9, IMU_STREAM_FLAG_VALID, sample);
+        assert!(matches!(
+            tracker.ingest(&first, 1_200),
+            ImuStreamEvaluation::Sample(_)
+        ));
+        assert_eq!(tracker.check_timeout(1_449), None);
+
+        let gap = imu_stream_packet(11, IMU_STREAM_FLAG_VALID, sample);
+        assert_eq!(
+            tracker.ingest(&gap, 1_450),
+            ImuStreamEvaluation::Stop(ImuStreamStopReason::SequenceGap {
+                expected: 10,
+                received: 11,
+            })
+        );
+        assert!(!tracker.is_active());
     }
 
     #[test]

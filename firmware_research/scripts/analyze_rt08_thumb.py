@@ -172,6 +172,51 @@ def find_thumb_imm8_sites(data: bytes, immediate: int) -> list[dict[str, int | s
     return sites
 
 
+def find_thumb_ldr_literal_value_sites(
+    data: bytes, literal_value: int
+) -> list[dict[str, int | str]]:
+    """Find 16-bit Thumb LDR literal instructions loading an exact uint32 value.
+
+    This intentionally reports candidates rather than claiming every matching
+    halfword is executable code. Callers should confirm each result against the
+    surrounding control flow before assigning semantics.
+    """
+    if literal_value < 0 or literal_value > 0xFFFFFFFF:
+        raise ValueError("literal search value must fit in uint32")
+    sites: list[dict[str, int | str]] = []
+    for file_offset in range(HEADER_SIZE, len(data) - 1, 2):
+        halfword = struct.unpack_from("<H", data, file_offset)[0]
+        if halfword & 0xF800 != 0x4800:
+            continue
+        address = file_offset_to_address(file_offset, len(data))
+        register = (halfword >> 8) & 7
+        immediate = (halfword & 0xFF) * 4
+        literal_address = ((address + 4) & ~3) + immediate
+        try:
+            literal_offset = address_to_file_offset(literal_address, len(data))
+        except ValueError:
+            continue
+        if literal_offset + 4 > len(data):
+            continue
+        loaded_value = struct.unpack_from("<I", data, literal_offset)[0]
+        if loaded_value != literal_value:
+            continue
+        sites.append(
+            {
+                "address": address,
+                "file_offset": file_offset,
+                "bytes": data[file_offset : file_offset + 2].hex(" "),
+                "mnemonic": "ldr",
+                "register": f"r{register}",
+                "immediate": immediate,
+                "literal_address": literal_address,
+                "literal_file_offset": literal_offset,
+                "literal_value": loaded_value,
+            }
+        )
+    return sites
+
+
 def numeric_operand(operands: str) -> int | None:
     match = NUMERIC_OPERAND_PATTERN.search(operands.strip())
     return int(match.group(1), 0) if match else None
@@ -266,6 +311,9 @@ def main() -> int:
     parser.add_argument("--disassemble-anchor", help="disassemble the pointer before an exact string")
     parser.add_argument("--find-callers", action="append", type=parse_int, default=[])
     parser.add_argument("--find-thumb-imm8", action="append", type=parse_int, default=[])
+    parser.add_argument(
+        "--find-literal-value", action="append", type=parse_int, default=[]
+    )
     parser.add_argument("--bytes", type=parse_int, default=0x100)
     parser.add_argument("--engine-path", type=Path)
     args = parser.parse_args()
@@ -283,6 +331,13 @@ def main() -> int:
         report["thumb_imm8_sites"] = {
             f"0x{immediate:02x}": find_thumb_imm8_sites(data, immediate)
             for immediate in args.find_thumb_imm8
+        }
+    if args.find_literal_value:
+        report["literal_value_sites"] = {
+            f"0x{literal_value:08x}": find_thumb_ldr_literal_value_sites(
+                data, literal_value
+            )
+            for literal_value in args.find_literal_value
         }
 
     address = args.disassemble_address

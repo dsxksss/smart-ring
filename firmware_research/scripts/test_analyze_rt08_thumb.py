@@ -12,6 +12,7 @@ from analyze_rt08_thumb import (
     decode_thumb_bl,
     file_offset_to_address,
     find_bl_callers,
+    find_thumb_ldr_literal_value_sites,
     find_thumb_imm8_sites,
     instruction_annotations,
     load_image,
@@ -102,6 +103,31 @@ class AnalyzerTests(unittest.TestCase):
                 "immediate": 0x3B,
             },
             find_thumb_imm8_sites(bytes(data), 0x3B),
+        )
+
+    def test_finds_thumb_ldr_literal_value_sites(self) -> None:
+        data = bytearray(synthetic_image())
+        instruction_offset = HEADER_SIZE + 0x60
+        instruction_address = file_offset_to_address(instruction_offset, len(data))
+        literal_address = ((instruction_address + 4) & ~3) + 8
+        literal_offset = address_to_file_offset(literal_address, len(data))
+        struct.pack_into("<H", data, instruction_offset, 0x4902)
+        struct.pack_into("<I", data, literal_offset, 3000)
+        self.assertEqual(
+            find_thumb_ldr_literal_value_sites(bytes(data), 3000),
+            [
+                {
+                    "address": instruction_address,
+                    "file_offset": instruction_offset,
+                    "bytes": "02 49",
+                    "mnemonic": "ldr",
+                    "register": "r1",
+                    "immediate": 8,
+                    "literal_address": literal_address,
+                    "literal_file_offset": literal_offset,
+                    "literal_value": 3000,
+                }
+            ],
         )
 
 
