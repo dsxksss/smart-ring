@@ -34,13 +34,26 @@ class BootActivationTests(unittest.TestCase):
             {"image_id": "0x2793", "second_argument": 0},
         )
         self.assertFalse(report["application_git_version_passed_as_activation_argument"])
+        self.assertTrue(report["raw_version_semantics_proven"])
+        self.assertEqual(
+            report["application_git_version"],
+            {
+                "raw": "0x00001041",
+                "major": 1,
+                "minor": 4,
+                "revision": 1,
+                "reserve": 0,
+                "commit_id": "0x1201A39E",
+            },
+        )
         self.assertTrue(
             report["activation_address_dataflow"][
                 "validation_success_required_before_commit"
             ]
         )
-        self.assertFalse(report["rom_api_names_proven"])
+        self.assertTrue(report["rom_api_names_proven"])
         self.assertFalse(report["ota_bank_header_update_proven"])
+        self.assertTrue(report["staged_application_flag_transition_proven"])
         self.assertFalse(report["application_flag_transition_proven"])
         self.assertFalse(report["equal_version_bank_selection_proven"])
         self.assertFalse(report["runtime_crash_rollback_proven"])

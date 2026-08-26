@@ -23,12 +23,12 @@
 - `0x008335FC -> 0x0083368C` 的 `CTRL_REG1 0x20 = 0x47`（50 Hz）属于待机动作/唤醒检测配置：同一分支还写入高通滤波、INT1 路由、三轴正向阈值 `0x1F` 和持续时间 `0`，且关闭 FIFO。不能再把 50 Hz 写成全局连续采样率；约 1 Hz 仍不是 LIS3DH 硬件 ODR 上限。
 - `0x00833A7C` 的加速度判定路径累计超过阈值后调用 `0x0082D408(2)`；该函数构造并通知的 16 字节包正是 `02 02 00 ... 04`。随后它以 `3000`（3000 ms）重启 `0x0020BF84`（`gsensor_shake_flag_timer_id`）并设置门控标志，因此已确认 `02 02` 至少存在一条 IMU/敲击生成路径，`3000` 对应其约 3 秒门控/冷却期而非 FIFO 采样周期。
 - `0x0020BF80` read timer 创建时 repeat=`1`，活动阶段以 `800` 重启；INT1/活动路径 `0x00833C88` 设置状态 `+5`，`0x00833822` 配置 25 Hz FIFO，后续普通周期 `0x0083386A` 调用 `0x00832F9C` 排空 FIFO，状态 `+4` 在 `0x008337FC` 停止。`0x0020BF84` shake timer 创建时 repeat=`0`，与一次性门控用途一致。
-- 已新增只读锚点校验 `verify_rt08_imu_stream_anchors.py`，会先验证官方 SHA-256，再验证关键原始指令片段；`analyze_rt08_ota_path.py` 锁定 10 个 OTA 接收端锚点和 3 个相邻存储锚点；`analyze_rt08_boot_activation.py` 锁定 7 个激活链锚点。已证明下载 payload 只有 `image_id=0x2793` 的应用镜像、没有独立 OTA Bank Header，包内 `not_ready/not_obsolete` 均为 `1`；OTA End 以 `(0x2793, 0)` 解析候选地址，验证成功后才提交。应用头 `git_ver` 未直接作为激活参数；ROM API 名称、安装后状态位转换、OTA Bank Header 更新/选择、运行时崩溃回滚和掉电恢复仍明确报告为未证明。Rust 已实现显式 `imu-stream` 命令、`A1 09 01/00` 启停、`A2 10` 解码、姿态滚轮和 fail-closed 清理；默认只监听，必须精确匹配设备身份、显式确认未验证候选并传入 `--inject` 才注入。
+- 已新增只读锚点校验 `verify_rt08_imu_stream_anchors.py`，会先验证官方 SHA-256，再验证关键原始指令片段；`analyze_rt08_ota_path.py` 锁定 OTA 接收端、相邻存储和 Flash 描述符；`analyze_rt08_boot_activation.py` 锁定 7 个激活链锚点。2026-08-27 取得哈希为 `ef1f47b83d60aeb54edb83a34ecc9d92218965ab18ff02256773441d35f7db52` 的 RTL8762E SDK v1.5.0；`verify_rtl8762e_sdk_v1_5_0.py` 会直接验证 ZIP 与 7 个成员。官方 ROM 表已命名 `0x8AE2 get_header_addr_by_img_id`、`0x8B94 get_temp_ota_bank_addr_by_img_id`、`0x8B7A is_ota_support_bank_switch`、`0x8A5C check_image_chksum`、`0x3ED1A dfu_set_ready`。R08 `0x826F2A` 对应 `dfu_check_checksum`，`0x826F16` 对应 `dfu_set_image_ready`，已证明暂存镜像校验和清除 `not_ready`；OTA `+0x194` 是 `T_OTA_HEADER_FORMAT.ver_val`，应用 `+0x60` 是 `git_ver.ver_info.version`。仍未证明 R08 安装后头、实际 Flash Map、bootloader copy 掉电恢复和运行时回滚。Rust 已实现显式 `imu-stream` 命令、`A1 09 01/00` 启停、`A2 10` 解码、姿态滚轮和 fail-closed 清理；默认只监听，必须精确匹配设备身份、显式确认未验证候选并传入 `--inject` 才注入。
 - `0x00832F9C` 是按芯片型号分支的批量读取函数；LIS3DH 路径先读 FIFO 状态寄存器 `0x2F`，把有效样本数限制为最多 32 个，再在内部循环 `0x00833120` 从 `0x28` 每次读取 6 字节 XYZ，并写入 `0x0020BF70` 附近的环形缓冲。`0x0083394E` 从该缓冲提取三轴值供 `A1 03` 打包，因此硬件 FIFO、RAM 缓冲消费和 BLE 通知是三个不同速率层。
 - 环形缓冲生产者的 16 位字节计数位于 `0x0020BFA8`，每个新 XYZ 前进 6，容量阈值 `0x1EC` 字节（82 样本）。候选每 100 ms 比较一次；不前进就发送一次 `STALE` 并立即关闭 timer/FIFO/IMU，不会重复发送旧姿态。
 - 离线 IMU patch 对象占用 `0x00849B08..0x00849C2C`，大小 292，SHA-256 `0aeb8f7fd8ed84e642b38dadfa578d0185fd3aee96a55554ce2798c9a0faec0a`；候选整包 SHA-256 `d55458692d51ff4d21d385e61dfba34c8296934944fe3ad493f0dc07744ec1ac`。构建器锁定原厂/补丁哈希、hook、全零空洞、绝对地址表和外层 sum32，并始终输出 `flash_allowed=false`。
 - `0x0083394E` 在 `0x0020BFA1` 非零时会先调用 `0x00832F9C` 排空 LIS3DH FIFO，再从 RAM 环形缓冲取样；补丁设置该标志，因此 100 ms callback 不是重复读取静态 RAM。原厂 callback `0x0083417C` 也会在自身回调中调用 `0x00829F44` 停止同一 timer，降低了补丁自停模式的静态风险，但真实 RTOS 行为仍需非唯一硬件验证。
-- 已新增 Unicorn ARMv6-M Thumb 指令级仿真，直接执行哈希锁定的 292 字节补丁并通过 9 个场景：非自定义命令重放、timer 启动失败、启动顺序、新鲜通知、断连后在 FIFO/通知前立即停流、stale 单次通知后急停、120 tick 硬停止、幂等显式停止、停止后迟到 callback。`emulate_rt08_stock_activation.py` 另直接执行原厂激活函数并通过 5 个解析失败、验证失败/成功、条件偏移和特殊 ID 场景；它证明应用层门控，但未模拟未知 ROM 副作用。完整回归为 45 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。
+- 已新增 Unicorn ARMv6-M Thumb 指令级仿真，直接执行哈希锁定的 292 字节补丁并通过 9 个场景：非自定义命令重放、timer 启动失败、启动顺序、新鲜通知、断连后在 FIFO/通知前立即停流、stale 单次通知后急停、120 tick 硬停止、幂等显式停止、停止后迟到 callback。`emulate_rt08_stock_activation.py` 另直接执行原厂激活函数并通过 5 个解析失败、验证失败/成功、条件偏移和特殊 ID 场景；ROM 名称已有 SDK 证据，但仿真仍不执行真实 Flash/bootloader 副作用。完整回归为 54 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。
 - MP Tool 的 `Backup files` 仅复制工程中已配置的下载文件和 flash map，不会从芯片导出整片 Flash；RTL8762E 的 RD readback 又是加密的且不支持 `Read All`。在非唯一硬件证明原样回写前，任何这类文件都只能标记为“可重复读回证据”，不能叫恢复备份。
 - `verify_r08_readback_pair.py` 已实现两次离线读回的声明范围、长度、SHA-256 和逐字节校验；即使相同也固定输出 `READBACK_REPEATABILITY_ONLY`，不会把加密读回误报为完整备份或刷写授权。
 - 现有证据只支持用重力向量估计俯仰或横滚；没有陀螺仪证据，绕重力轴的纯旋转不可观测，不能承诺完整“拧戒指”控制。
@@ -50,8 +50,8 @@ cargo build -p r08 --release
 
 ## 下一阶段准确任务
 
-1. 使用已锁定的 `0x826F2A -> ROM 0x8B94/0x8B7A/0x8A5C/0x3ED1A` 调用链，取得授权的 RTL8762E SDK 符号/头文件来命名 ROM API，并确认 `(0x2793, 0)` 如何更新/选择独立 OTA Bank Header；不要把应用头的 `git_ver` 当作已经证明的激活参数，也不要猜测修改未知版本字段。
-2. 恢复应用之外的完整 Flash map、Bootloader/OTA Header/系统配置依赖，以及结构有效但运行时崩溃时的回退行为。
+1. SDK 符号和头结构已经完成，不要重复。下一步恢复 R08 应用之外的实际 Flash map、当前 OTA Header/系统配置依赖，并确认 bootloader copy 的源、目标、状态位和断电恢复点。
+2. 确认结构有效但应用运行时崩溃时是否存在回退；现有 SDK 启动流程只证明头/校验失败时的另一 bank 尝试，不证明 HardFault 后回滚。
 3. 取得真实高清 PCB 正反面照片，确认 RTL8762E 封装及 P0_3、P3_0、P3_1、SWD、GND、VBAT 测试点；现有下载的 FCC `.pdf` 是 Access Denied HTML，不能用于焊盘判断。
 4. 在不擦除/不写入的前提下验证 MP/UART 或 SWD 独立进入和 Flash 身份读取；随后才讨论两次一致读回、双介质备份及原样回写演练。
 5. 按 `firmware_research/RT08_IMU_ONLY_STREAM_DESIGN_20260826.md` 和 `firmware_research/RT08_TIMER_AND_PATCH_EMULATION_20260826.md` 继续做离线候选差异、真实 RTOS 并发和主机故障注入测试；已有指令级仿真不替代硬件。12 秒固件硬超时、8 秒续期、250 ms 主机超时和 stale 急停均不得放宽。
@@ -65,7 +65,7 @@ cargo build -p r08 --release
 - 已把 MCU 系列缩小并以镜像头确认到 RTL8762E，但没有确认具体封装、整片分区、Secure Boot、签名或反回滚。
 - 没有验证 SWD、JTAG 或 Boot ROM 恢复。
 - 已实现但没有刷写或真机验证 25 Hz 采样、10 Hz 通知和姿态连续滚动候选；它不是“可靠可刷”版本。
-- 没有确认 OTA Bank Header 更新/选择、运行时失败回滚、完整恢复备份或测试板恢复演练。
+- 已确认 OTA Header 结构和应用侧单 bank 激活路径，但没有读取 R08 当前安装 OTA Header，也没有确认 bootloader copy 掉电恢复、运行时失败回滚、完整恢复备份或测试板恢复演练。
 
 如果用户要求直接刷实验包，应先解释上述缺口，并继续做恢复路径或离线验证；不要把“用户愿意承担风险”理解成允许跳过唯一设备的可恢复性验证。
 

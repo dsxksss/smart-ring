@@ -31,8 +31,7 @@ EXPECTED_CTRL_FLAGS = 0x0981
 RAW_VERSION_FORMAT = bytes.fromhex("41 10 00 00 9e a3 01 12")
 
 # Each anchor is an independently checked instruction sequence from the exact
-# stock image.  ROM targets are intentionally kept as addresses until matching
-# RTL8762E SDK symbols are obtained from an authorized source.
+# stock image. Hash-locked RTL8762E SDK v1.5.0 evidence names the ROM targets.
 ANCHORS = (
     (
         "ota_end_passes_app_image_id_to_activation",
@@ -101,6 +100,7 @@ def analyze(data: bytes) -> dict[str, Any]:
     ctrl_flags = struct.unpack_from("<H", payload, 2)[0]
     image_id = struct.unpack_from("<H", payload, 4)[0]
     raw_version = payload[0x60:0x68]
+    git_version, git_commit_id = struct.unpack("<II", raw_version)
     stored_sha256 = payload[
         RTL8762E_SHA256_OFFSET : RTL8762E_SHA256_OFFSET + 32
     ]
@@ -121,7 +121,15 @@ def analyze(data: bytes) -> dict[str, Any]:
         "integrity_check_en_in_boot": bool(ctrl_flags & (1 << 9)),
         "stored_sha256_all_zero": not any(stored_sha256),
         "raw_version_format_bytes": raw_version.hex(" "),
-        "raw_version_semantics_proven": False,
+        "raw_version_semantics_proven": True,
+        "application_git_version": {
+            "raw": f"0x{git_version:08X}",
+            "major": git_version & 0xF,
+            "minor": (git_version >> 4) & 0xFF,
+            "revision": (git_version >> 12) & 0x7FFF,
+            "reserve": (git_version >> 27) & 0x1F,
+            "commit_id": f"0x{git_commit_id:08X}",
+        },
         "downloaded_payload_type": "single_rtl8762e_application_image",
         "separate_ota_bank_header_present_in_downloaded_payload": False,
         "packaged_application_flags": {
@@ -136,26 +144,36 @@ def analyze(data: bytes) -> dict[str, Any]:
         },
         "application_git_version_passed_as_activation_argument": False,
         "activation_address_dataflow": {
-            "image_id_resolver_call": "0x00008B94",
+            "image_id_resolver_call": (
+                "get_temp_ota_bank_addr_by_img_id (0x00008B94)"
+            ),
             "resolver_result_saved_in": "r4",
             "second_argument_saved_in": "r7",
             "second_argument_conditionally_added_to_resolved_address": True,
-            "resolved_address_validation_call": "0x00008A5C",
-            "commit_wrapper": "0x00826F16",
+            "bank_switch_query_call": (
+                "is_ota_support_bank_switch (0x00008B7A)"
+            ),
+            "resolved_address_validation_call": (
+                "check_image_chksum (0x00008A5C)"
+            ),
+            "commit_wrapper": "dfu_set_image_ready (0x00826F16)",
+            "commit_rom_call": "dfu_set_ready (0x0003ED1A)",
             "validation_success_required_before_commit": True,
         },
         "rom_calls_observed": ["0x00008B94", "0x00008B7A", "0x00008A5C", "0x0003ED1A"],
-        "rom_api_names_proven": False,
+        "activation_function": "dfu_check_checksum (0x00826F2A)",
+        "rom_api_names_proven": True,
         "ota_bank_header_update_proven": False,
+        "staged_application_flag_transition_proven": True,
         "application_flag_transition_proven": False,
         "equal_version_bank_selection_proven": False,
         "runtime_crash_rollback_proven": False,
         "power_loss_recovery_proven": False,
         "flash_authorized": False,
         "safety_note": (
-            "The stock OTA End handler reaches the checked activation chain, but "
-            "the exact ROM API semantics and OTA-bank-header update/selection, "
-            "installed application flag transitions, runtime-crash rollback, and "
+            "The stock OTA End handler reaches the hash-locked SDK-named checksum "
+            "and staged-image ready path. Bootloader copy completion, OTA-bank-header "
+            "selection, installed application state, runtime-crash rollback, and an "
             "independent recovery path remain unproven."
         ),
         "anchors": checked,

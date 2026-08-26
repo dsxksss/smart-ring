@@ -32,13 +32,20 @@ class StockImageInfoEmulationTests(unittest.TestCase):
         self.assertTrue(
             report["ota_header_and_application_use_distinct_descriptor_fields"]
         )
-        self.assertFalse(report["ota_header_field_semantics_proven"])
+        self.assertEqual(
+            report["ota_header_field_semantics"], "T_OTA_HEADER_FORMAT.ver_val"
+        )
+        self.assertTrue(report["ota_header_field_semantics_proven"])
         self.assertEqual(
             report["application_field_semantics"],
-            "T_IMG_HEADER_FORMAT.git_ver",
+            "T_IMG_HEADER_FORMAT.git_ver.ver_info.version",
         )
         self.assertTrue(report["application_field_semantics_proven"])
-        self.assertFalse(report["rom_api_names_proven"])
+        self.assertTrue(report["function_name_proven"])
+        self.assertEqual(
+            report["rom_descriptor_resolver"], "get_header_addr_by_img_id"
+        )
+        self.assertTrue(report["rom_api_names_proven"])
         self.assertFalse(report["installed_ota_header_readback_proven"])
         self.assertFalse(report["bank_selection_proven"])
         self.assertFalse(report["runtime_rollback_proven"])

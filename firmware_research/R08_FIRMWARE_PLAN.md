@@ -24,9 +24,9 @@
 - Realtek 官方 MP 文档给出不依赖应用固件的 UART 入口：复位时拉低 `P0_3`，以 `P3_1(RX)` / `P3_0(TX)` 通信；但 RTL8762E 读回为加密数据，尚未证明可原样恢复。
 - FCC ID `2AOM3-R08` 有公开内部照片，但当前镜像站点阻止自动取得原始 PDF，PCB 测试点仍需高清照片确认。
 - 原厂 OTA 接收端只允许把去掉 QRing 包装的应用写入 `0x0084E000..0x00872000`；末端 `0x00872000` 已由原厂应用作为至少两个 4 KiB 页的持久化存储起点，不能把它当作可扩展代码空间。
-- OTA End 确实以参数 `(image_id=0x2793, second_argument=0)` 进入 `0x00826F2A` 激活链，并经过 ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A`；应用头 `git_ver` 没有直接作为激活参数。这些地址的官方符号、OTA Bank Header 更新/选择、运行时崩溃回滚和掉电恢复仍未证明。
-- 原厂 `0x00826C22` 的指令级仿真确认 `0x2790` 与 `0x2793` 走不同描述字段：OTA Header ID 使用 resolver 对象 `+0x194`，应用 ID 范围使用 `+0x60`。精确 RTL8762E SDK 结构已把应用 `+0x60` 命名为 `T_IMG_HEADER_FORMAT.git_ver`；OTA Header `+0x194`、设备 bank 状态和激活调用关系仍未证明。
-- 应用包固定链接到 `image_base=0x00826000 / exe_base=0x00826400`，接收暂存区却是 `0x0084E000`，且包内没有 Bank1 重定位应用或 OTA Header。当前分类是 `SINGLE_BANK_COPY_IMAGE_CONSISTENT`；在精确 ROM/SDK 和真机读回证明前，安全模型必须假定激活会覆盖旧应用、没有运行时回滚。
+- OTA End 确实以参数 `(image_id=0x2793, second_argument=0)` 进入 `0x00826F2A`。哈希锁定的 RTL8762E SDK v1.5.0 已将其控制流识别为 `dfu_check_checksum`，并精确命名 ROM 调用：`0x8B94 get_temp_ota_bank_addr_by_img_id`、`0x8B7A is_ota_support_bank_switch`、`0x8A5C check_image_chksum`、`0x3ED1A dfu_set_ready`。这证明暂存镜像会先校验再清除 `not_ready`；未证明安装后镜像和掉电恢复。
+- 原厂 `0x00826C22` 是 `dfu_report_target_fw_info`：OTA Header ID 的 `+0x194` 是 `T_OTA_HEADER_FORMAT.ver_val`，应用 ID 的 `+0x60` 是 `T_IMG_HEADER_FORMAT.git_ver.ver_info.version`。R08 原始 8 字节解码为 git version `1.4.1`、commit ID `0x1201A39E`，但它不直接作为激活参数。
+- 应用包固定链接到 `image_base=0x00826000 / exe_base=0x00826400`，接收暂存区却是 `0x0084E000`，且包内没有 Bank1 重定位应用或 OTA Header。官方禁用 bank-switch 源码/参考布局也采用 Bank1 大小为零、OTA TMP 置 ready 后由 bootloader copy 的模型。因此已从“静态一致”提升为 `SINGLE_BANK_COPY_IMAGE_PROVEN_AT_SDK_ARCHITECTURE_AND_R08_APPLICATION_PATH`；R08 实际 Flash Map、bootloader 复制和掉电行为尚未实测，安全模型仍必须假定激活覆盖旧应用、没有运行时回滚。
 
 ## 当前离线实现
 
@@ -54,6 +54,7 @@ py firmware_research\scripts\analyze_rt08_ota_path.py research_artifacts\firmwar
 py firmware_research\scripts\analyze_rt08_boot_activation.py research_artifacts\firmware\RT08_3.10.48_260309.bin
 py firmware_research\scripts\emulate_rt08_stock_activation.py research_artifacts\firmware\RT08_3.10.48_260309.bin
 py firmware_research\scripts\emulate_rt08_stock_image_info.py research_artifacts\firmware\RT08_3.10.48_260309.bin
+py firmware_research\scripts\verify_rtl8762e_sdk_v1_5_0.py path\to\RTL8762E_SDK_v1.5.0.zip
 py -m unittest discover -s firmware_research\scripts -p "test_*.py"
 ```
 

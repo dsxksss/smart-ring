@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Execute the stock R08 activation wrapper with deterministic ROM stubs.
 
-This is an offline control-flow check.  It does not name the ROM functions,
-connect to a ring, generate a firmware image, or authorize flashing.
+This is an offline control-flow check.  Hash-locked RTL8762E SDK v1.5.0
+evidence names the ROM functions.  It does not connect to a ring, generate a
+firmware image, or authorize flashing.
 """
 
 from __future__ import annotations
@@ -100,26 +101,26 @@ class StockActivationEmulator:
         self.state.calls.append({"name": name, "r0": argument & 0xFFFFFFFF})
 
     def _stub_special_resolver(self) -> None:
-        self._record("special_resolver", self._reg("r0"))
+        self._record("flash_get_bank_addr", self._reg("r0"))
         self._return(self.state.special_resolver_result)
 
     def _stub_image_id_resolver(self) -> None:
-        self._record("image_id_resolver", self._reg("r0"))
+        self._record("get_temp_ota_bank_addr_by_img_id", self._reg("r0"))
         self._return(self.state.resolver_result)
 
     def _stub_address_classifier(self) -> None:
-        self._record("address_classifier", self._reg("r0"))
+        self._record("is_ota_support_bank_switch", self._reg("r0"))
         self._return(self.state.classifier_result)
 
     def _stub_address_validator(self) -> None:
         address = self._reg("r0")
-        self._record("address_validator", address)
+        self._record("check_image_chksum", address)
         self.state.validation_addresses.append(address)
         self._return(self.state.validator_result)
 
     def _stub_commit(self) -> None:
         address = self._reg("r0")
-        self._record("commit_wrapper", address)
+        self._record("dfu_set_image_ready", address)
         self.state.committed_addresses.append(address)
         self._return(0)
 
@@ -247,15 +248,23 @@ def validate_activation(stock: bytes) -> dict[str, Any]:
         "validation_failure_blocks_commit": True,
         "validation_success_commits_checked_address": True,
         "second_argument_is_conditional_address_offset": True,
-        "rom_api_names_proven": False,
-        "application_flag_transition_proven": False,
+        "function_name": "dfu_check_checksum",
+        "function_name_basis": (
+            "SDK source signature/control flow plus exact ROM symbol targets"
+        ),
+        "rom_api_names_proven": True,
+        "commit_wrapper": "dfu_set_image_ready",
+        "commit_rom_call": "dfu_set_ready",
+        "staged_not_ready_clear_path_proven": True,
+        "installed_application_flag_transition_proven": False,
         "ota_bank_header_update_proven": False,
         "runtime_rollback_proven": False,
         "flash_authorized": False,
         "safety_note": (
-            "The exact stock instructions were executed with deterministic ROM stubs. "
-            "This proves application-level gating and address dataflow only; it does not "
-            "prove the side effects of the unresolved ROM calls or authorize flashing."
+            "The exact stock instructions were executed with deterministic stubs whose "
+            "names are fixed by the official RTL8762E SDK ROM symbol table. This proves "
+            "the staged-image checksum and not_ready-clear path, but not the later "
+            "bootloader copy, installed-image state, rollback, or flashing safety."
         ),
     }
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Execute the stock RT08 image-info resolver with deterministic ROM stubs.
 
-This is an offline control-flow and dataflow check.  The ROM entry points stay
-unnamed until exact RTL8762E SDK symbols are available.  Nothing in this module
-connects to a ring, writes flash, builds an OTA packet, or authorizes flashing.
+This is an offline control-flow and dataflow check.  Exact RTL8762E SDK v1.5.0
+symbols and structures name the ROM resolver and both version fields.  Nothing
+in this module connects to a ring, writes flash, builds an OTA packet, or
+authorizes flashing.
 """
 
 from __future__ import annotations
@@ -98,11 +99,11 @@ class StockImageInfoEmulator:
         self.state.calls.append({"name": name, "r0": argument & 0xFFFFFFFF})
 
     def _stub_special_resolver(self) -> None:
-        self._record("special_resolver", self._reg("r0"))
+        self._record("flash_get_bank_addr", self._reg("r0"))
         self._return(self.state.special_result)
 
     def _stub_descriptor_resolver(self) -> None:
-        self._record("descriptor_resolver", self._reg("r0"))
+        self._record("get_header_addr_by_img_id", self._reg("r0"))
         self._return(self.state.descriptor_result)
 
     def _stub_log(self) -> None:
@@ -230,22 +231,29 @@ def validate_image_info(stock: bytes) -> dict[str, Any]:
             ),
         },
         "ota_header_and_application_use_distinct_descriptor_fields": True,
-        "ota_header_field_semantics_proven": False,
-        "application_field_semantics": "T_IMG_HEADER_FORMAT.git_ver",
+        "function_name": "dfu_report_target_fw_info",
+        "function_name_proven": True,
+        "ota_header_field_semantics": "T_OTA_HEADER_FORMAT.ver_val",
+        "ota_header_field_semantics_proven": True,
+        "application_field_semantics": (
+            "T_IMG_HEADER_FORMAT.git_ver.ver_info.version"
+        ),
         "application_field_semantics_proven": True,
         "application_field_semantics_basis": (
             "exact RTL8762E SDK structure plus stock resolver-object field accesses"
         ),
-        "rom_api_names_proven": False,
+        "rom_descriptor_resolver": "get_header_addr_by_img_id",
+        "rom_api_names_proven": True,
         "installed_ota_header_readback_proven": False,
         "bank_selection_proven": False,
         "runtime_rollback_proven": False,
         "flash_authorized": False,
         "safety_note": (
             "The exact stock instructions prove only image-ID branching and field "
-            "offset dataflow. The exact RTL8762E SDK identifies application +0x60 "
-            "as git_ver, but the OTA-header +0x194 field, ROM resolver, installed bank "
-            "state, activation side effects, and rollback behavior remain unresolved."
+            "offset dataflow. Hash-locked RTL8762E SDK v1.5.0 evidence names +0x60 "
+            "as git_ver.ver_info.version, +0x194 as OTA ver_val, and ROM 0x8AE2 as "
+            "get_header_addr_by_img_id. Installed bank state, activation side effects, "
+            "and rollback behavior remain unresolved."
         ),
     }
 
