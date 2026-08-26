@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::System::Console::GetConsoleWindow;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, mouse_event, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_WHEEL, VK_C,
@@ -19,10 +20,10 @@ use windows::Win32::UI::Input::{
     RIDI_DEVICENAME, RID_INPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetWindowLongPtrW, PostMessageW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, MSG, WM_CLOSE,
-    WM_DESTROY, WM_INPUT, WNDCLASSW, WS_EX_NOACTIVATE, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
+    GetForegroundWindow, GetMessageW, GetWindowLongPtrW, PostMessageW, PostQuitMessage,
+    RegisterClassW, SetWindowLongPtrW, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+    GWLP_USERDATA, MSG, WM_CLOSE, WM_DESTROY, WM_INPUT, WNDCLASSW, WS_EX_NOACTIVATE, WS_POPUP,
 };
 
 use crate::identity::RING_MAC_COMPACT;
@@ -262,6 +263,12 @@ impl WindowsInjector {
 
     fn hotkey(&mut self, key: u8) -> Result<()> {
         unsafe {
+            if foreground_is_terminal() {
+                tracing::warn!(
+                    "ACTION_IGNORED 控制窗口仍在前台，已拦截快捷键以防程序被 Ctrl+C 关闭；请先切换到要操作的软件"
+                );
+                return Ok(());
+            }
             keybd_event(VK_CONTROL.0 as u8, 0, Default::default(), 0);
             keybd_event(key, 0, Default::default(), 0);
             keybd_event(key, 0, KEYEVENTF_KEYUP, 0);
@@ -269,6 +276,31 @@ impl WindowsInjector {
         }
         Ok(())
     }
+}
+
+fn foreground_is_terminal() -> bool {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground == GetConsoleWindow() {
+            return true;
+        }
+        if foreground.0.is_null() {
+            return false;
+        }
+        let mut buffer = [0u16; 128];
+        let length = GetClassNameW(foreground, &mut buffer);
+        if length <= 0 {
+            return false;
+        }
+        is_terminal_window_class(&String::from_utf16_lossy(&buffer[..length as usize]))
+    }
+}
+
+fn is_terminal_window_class(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "ConsoleWindowClass" | "CASCADIA_HOSTING_WINDOW_CLASS"
+    )
 }
 
 impl Injector for WindowsInjector {
@@ -315,3 +347,15 @@ impl Injector for WindowsInjector {
 
 #[allow(dead_code)]
 fn _hinstance_ty(_: HINSTANCE) {}
+
+#[cfg(test)]
+mod tests {
+    use super::is_terminal_window_class;
+
+    #[test]
+    fn recognizes_legacy_console_and_windows_terminal() {
+        assert!(is_terminal_window_class("ConsoleWindowClass"));
+        assert!(is_terminal_window_class("CASCADIA_HOSTING_WINDOW_CLASS"));
+        assert!(!is_terminal_window_class("Chrome_WidgetWin_1"));
+    }
+}

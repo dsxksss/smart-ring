@@ -58,6 +58,20 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
         }
     };
     tracing::info!("R08 动作通知订阅完成");
+    if touch_enabled {
+        // The first write wakes firmware before CCCD subscription. Repeat the
+        // official command after subscription so the armed state and its
+        // status response are observable instead of assuming the first write
+        // took effect.
+        set_touch_enabled(&connection, &options, true)
+            .await
+            .context("订阅完成后重新武装 R08 智能触控失败")?;
+        connection
+            .write(&touch_read_packet())
+            .await
+            .context("查询 R08 智能触控状态失败")?;
+        tracing::info!("TOUCH_ARMED 已重新武装触控并请求戒指返回真实状态");
+    }
 
     let mut engine = MappingEngine::new(MappingConfig {
         scroll_gain: options.scroll_gain.clamp(1, 10),
@@ -89,6 +103,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
         println!(
             "控制待机：请双击戒指唤醒；绿光亮起后，1 分钟内可上下滑滚动、双击复制、三击粘贴。"
         );
+        println!("看到 CONTROL_AWAKE 后，请先切换到要操作的软件；控制窗口在前台时会拦截复制/粘贴快捷键。");
         println!("按 Enter 或 Ctrl+C 安全退出。");
     } else {
         tracing::info!(
