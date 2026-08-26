@@ -28,8 +28,9 @@
 - 环形缓冲生产者的 16 位字节计数位于 `0x0020BFA8`，每个新 XYZ 前进 6，容量阈值 `0x1EC` 字节（82 样本）。候选每 100 ms 比较一次；不前进就发送一次 `STALE` 并立即关闭 timer/FIFO/IMU，不会重复发送旧姿态。
 - 离线 IMU patch 对象占用 `0x00849B08..0x00849C2C`，大小 292，SHA-256 `0aeb8f7fd8ed84e642b38dadfa578d0185fd3aee96a55554ce2798c9a0faec0a`；候选整包 SHA-256 `d55458692d51ff4d21d385e61dfba34c8296934944fe3ad493f0dc07744ec1ac`。构建器锁定原厂/补丁哈希、hook、全零空洞、绝对地址表和外层 sum32，并始终输出 `flash_allowed=false`。
 - `0x0083394E` 在 `0x0020BFA1` 非零时会先调用 `0x00832F9C` 排空 LIS3DH FIFO，再从 RAM 环形缓冲取样；补丁设置该标志，因此 100 ms callback 不是重复读取静态 RAM。原厂 callback `0x0083417C` 也会在自身回调中调用 `0x00829F44` 停止同一 timer，降低了补丁自停模式的静态风险，但真实 RTOS 行为仍需非唯一硬件验证。
-- 已新增 Unicorn ARMv6-M Thumb 指令级仿真，直接执行哈希锁定的 292 字节补丁并通过 9 个场景：非自定义命令重放、timer 启动失败、启动顺序、新鲜通知、断连后在 FIFO/通知前立即停流、stale 单次通知后急停、120 tick 硬停止、幂等显式停止、停止后迟到 callback。完整回归为 39 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。
+- 已新增 Unicorn ARMv6-M Thumb 指令级仿真，直接执行哈希锁定的 292 字节补丁并通过 9 个场景：非自定义命令重放、timer 启动失败、启动顺序、新鲜通知、断连后在 FIFO/通知前立即停流、stale 单次通知后急停、120 tick 硬停止、幂等显式停止、停止后迟到 callback。完整回归为 43 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。
 - MP Tool 的 `Backup files` 仅复制工程中已配置的下载文件和 flash map，不会从芯片导出整片 Flash；RTL8762E 的 RD readback 又是加密的且不支持 `Read All`。在非唯一硬件证明原样回写前，任何这类文件都只能标记为“可重复读回证据”，不能叫恢复备份。
+- `verify_r08_readback_pair.py` 已实现两次离线读回的声明范围、长度、SHA-256 和逐字节校验；即使相同也固定输出 `READBACK_REPEATABILITY_ONLY`，不会把加密读回误报为完整备份或刷写授权。
 - 现有证据只支持用重力向量估计俯仰或横滚；没有陀螺仪证据，绕重力轴的纯旋转不可观测，不能承诺完整“拧戒指”控制。
 - R08 应用镜像采用 RTL8762E 格式：`ic_type=12`，镜像基址 `0x00826000`，可执行体起点 `0x00826400`；旧 `0x00824xxx` 映射整体错误 `0x2000`，文件偏移不变。
 - ATC_RF03_Ring 使用 BlueX RF03/STK8321，目标 R08 是 RTL8762E/LIS3DH。它只能参考研究方法，不能直接刷固件或复用内存布局、驱动。

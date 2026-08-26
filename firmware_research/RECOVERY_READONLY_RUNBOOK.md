@@ -58,6 +58,16 @@ MP Tool 的 `Backup files` 仅复制当前配置的下载文件和 flash map；�
 4. 对每个区域比较长度和 SHA-256，再做逐字节比较。任何差异都必须先解释为计数器、日志、磨损均衡或工具包装；不能直接忽略。
 5. 原始读回若为芯片绑定加密数据，标记为“尚未证明可恢复”，不能仅因两次相同就称为备份。
 
+取得两份离线读回文件后，可用下列纯离线命令检查单一区域；必须按工具实际读取范围填写地址和长度，不能用推测值凑齐：
+
+```powershell
+py firmware_research\scripts\verify_r08_readback_pair.py cold-boot-a.bin cold-boot-b.bin `
+  --base-address 0x0084E000 --expected-length 0x24000 `
+  --region-name inactive-application-slot --encryption-status encrypted
+```
+
+校验器要求地址和长度均按 4 KiB 对齐、输入为两个不同文件，并同时检查声明长度、SHA-256 和逐字节差异。即使输出 `readback_repeatability_proven=true`，它也固定保持 `restore_proven=false`、`full_device_backup_proven=false` 和 `flash_authorized=false`；冷启动隔离、完整覆盖、独立介质及原样回写仍必须另行实证。
+
 阶段 C 的通过条件：范围完整、两次读回一致、动态区域差异被定位、工具没有隐式写入，并且副本已保存到两个独立介质且各自重新校验。
 
 ## 阶段 D：回写与失败启动演练
