@@ -117,3 +117,5 @@ IMU 连续滚动的独立通知协议、12 秒固件硬超时、8 秒主机续�
 镜像基址纠正、Realtek 头字段、MP 模式与恢复门槛见 `RTL8762E_IMAGE_AND_RECOVERY_20260826.md`。旧分析中的 Flash 地址已经按正确基址整体平移 `+0x2000`；文件偏移和原始字节不变。
 
 唯一设备的只读接线、身份读取、双读一致性和回写演练门槛见 `RECOVERY_READONLY_RUNBOOK.md`。该清单不是拆机或刷写授权。
+
+Realtek 官方 PDF 的文件哈希、视觉复核页码及其能证明/不能证明的边界见 `OFFICIAL_REALTEK_EVIDENCE_20260826.md`。

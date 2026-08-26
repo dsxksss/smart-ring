@@ -76,6 +76,8 @@ Realtek 官方 SDK 说明双 bank 启动时会先检查版本较高的应用；�
 
 `scripts/analyze_rt08_boot_activation.py` 已把原厂 OTA End 与应用内激活链固定为 6 组精确字节锚点：OTA End 以 `0x2793` 调用 `0x00826F2A`，后者可到达 ROM `0x00008B94`、`0x00008B7A`、`0x00008A5C`，成功分支再经 `0x00826F16` 调用 ROM `0x0003ED1A`。报告同时锁定 control flags `0x0981`、零 SHA 字段及头偏移 `0x60` 的原始 8 字节版本结构 `41 10 00 00 9e a3 01 12`。尚无授权 SDK 符号能可靠命名这些 ROM API，也不能从这 8 字节猜测版本语义；分析器因此固定输出同版本选择、运行时回滚、掉电恢复和刷写授权均为 `false`。
 
+官方 RTL8762E SDK User Guide 的双 bank 图文只定义“先检查版本更高的 bank”，没有定义版本完全相同时的选择规则。官方相邻系列 iOS OTA 工具文档还明确提示：没有镜像高于当前版本时不会切换 bank。这不能单独证明 R08 所用 ROM 的精确实现，却进一步说明“保留同版本号”不是可验证的激活方案；在取得 RTL8762E SDK 中 `T_VERSION_FORMAT` 定义、ROM 符号和实际 OTA Header 前，不修改那 8 个未知版本字节。
+
 ## 不依赖应用固件的恢复入口
 
 Realtek 官方量产工具文档确认 RTL8762x 支持 UART 下载和 Flash 读回：
@@ -87,6 +89,8 @@ Realtek 官方量产工具文档确认 RTL8762x 支持 UART 下载和 Flash 读�
 - SWD 候选为 `P1_0/SWDIO`、`P1_1/SWDCLK`，但具体封装和戒指 PCB 焊盘尚未确认。
 
 MP Tool 的 Read 模式支持 4 KiB 对齐起点和最多 32 MiB 读取，但文档明确指出 RTL8762E 读回数据是加密的，且不支持 Read All。加密物理读回不能自动视为可恢复备份；还需要证明同芯片可原样回写、覆盖范围完整，并且不会漏掉 OTP/eFuse/系统配置依赖。
+
+MP Tool 文档还确认 RD mode 默认关闭，需 Realtek 套件内的 RegistrySet Tool 开启；UART 下载使用 `P3_1/P3_0`，正常模式无法打开端口时可在复位期间拉低 `P0_3` 进入 MP mode。SDK 文档同时说明 `P0_3` 默认也是应用日志 UART，因此 PCB 上该焊盘可能承担复用功能，不能仅凭单一现象命名测试点。
 
 ## 恢复路径验收门槛
 
@@ -117,3 +121,5 @@ MP Tool 的 Read 模式支持 4 KiB 对齐起点和最多 32 MiB 读取，但文
 FCC 索引确认内部照片附件存在（3 页、报告号 `CTL2408273012-WF`、附件 id `7833424`），但本机此前保存的同名 `.pdf` 实际是 Cloudflare/Access Denied HTML，不是照片，不能作为焊盘证据。取得真正高清附件或由用户明确授权拆机并拍摄 PCB 宏观照片前，不猜测测试点。
 
 本文件记录的是恢复设计和硬门槛，不是对刷写的授权。
+
+官方 PDF 的本地复核哈希、页码和保守解释见 `OFFICIAL_REALTEK_EVIDENCE_20260826.md`。
