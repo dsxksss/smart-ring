@@ -1,12 +1,15 @@
 //! Hash- and identity-locked QRing DFU path for one sacrificial R08.
 
 use std::path::Path;
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+#[cfg(windows)]
 use futures::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
 
+#[cfg(windows)]
 use crate::protocol::{
     evaluate_imu_stream_packet, format_packet, imu_stream_start_packet, imu_stream_stop_packet,
     ImuStreamEvaluation,
@@ -163,6 +166,7 @@ fn validate_container(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn init_payload(candidate: &Candidate) -> Vec<u8> {
     let mut payload = Vec::with_capacity(9);
     payload.push(1);
@@ -172,6 +176,7 @@ fn init_payload(candidate: &Candidate) -> Vec<u8> {
     payload
 }
 
+#[cfg(windows)]
 fn data_frame(candidate: &Candidate, index: usize) -> Result<Vec<u8>> {
     let start = index * 1024;
     let end = usize::min(start + 1024, candidate.bytes.len());
