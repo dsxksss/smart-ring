@@ -25,6 +25,11 @@ ANCHORS = (
     ("lis3dh_50hz_int1", 0x0083368C, "47 21 20 20 ff f7 4a f9"),
     ("read_timer_activity_state", 0x00833822, "60 79 00 28 0e d0"),
     ("read_timer_fifo_drain", 0x0083386A, "ff f7 97 fb"),
+    (
+        "ring_latest_drains_fifo_when_enabled",
+        0x0083394E,
+        "ff b5 85 4f 06 46 30 37 78 78 81 b0 14 46 0d 46 00 28 0e d0 ff f7 1b fb",
+    ),
     ("shake_remote_action_2", 0x00833BA2, "02 20 f9 f7 30 fc"),
     ("read_and_shake_timer_create", 0x00833CF0, "ff f7 1e f9 01 20 02 46 00 90"),
     ("a1_xyz_ring_consumer", 0x00827E6E, "07 aa 09 a9 08 a8 0b f0 6b fd"),
@@ -32,6 +37,18 @@ ANCHORS = (
     ("a1_xyz_notify", 0x00827ED0, "02 f0 96 fe 69 46 c8 74 01 a8 06 f0 4b fd"),
     ("remote_packet_builder", 0x0082D408, "1f b5 00 21 00 91 01 91"),
     ("a1_common_packer_call", 0x008282E8, "00 20 ff f7 5e fd"),
+    (
+        "timer_wrapper_returns_rom_start_or_restart",
+        0x00829F18,
+        "1c b5 04 46 00 68 00 28 04 d0 11 46 20 46 e9 f7 b5 db 1c bd "
+        "00 93 01 91 13 46 01 22 09 a1 20 46 e9 f7 7c db 20 46 e9 f7 97 db 1c bd",
+    ),
+    (
+        "stock_timer_callback_self_stop",
+        0x0083417C,
+        "2d 49 10 b5 09 1d c8 79 40 1e 40 b2 c8 71 00 28 0a dc 00 20 "
+        "c8 70 88 71 c8 71 48 78 00 21 ff f7 69 f8 25 48 f5 f7 d0 fe 10 bd",
+    ),
 )
 
 

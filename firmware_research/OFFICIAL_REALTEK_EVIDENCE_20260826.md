@@ -26,6 +26,7 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 - PDF 第 51 页（印刷页 43）说明正常模式无法打开端口时，复位期间拉低 `P0_3` 可切换到 MP mode。
 - PDF 第 53 页（印刷页 45）再次确认 UART 读回要求芯片处于 MP mode；RTL8762E 不支持 `Read All`，只能按起点和长度读取加密数据。
 - PDF 第 58 页（印刷页 50）给出 RD mode 的 Flash ID 只读流程：detect、open、get flash ID。
+- 文档中的 `Backup files` 只复制当前配置的 RD 下载文件和 flash map，不会从目标芯片读取整片 Flash；它不能充当设备备份。
 
 ## 这些证据仍不能证明的事项
 
@@ -36,3 +37,5 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 - ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A` 的精确符号和参数语义。
 
 因此这些官方资料加强了恢复设计，但不改变候选的 `NON_FLASHABLE` / `flash_allowed=false` 状态。
+
+补丁本身的 timer 契约、FIFO 消费链和 Cortex-M0 指令级仿真见 `RT08_TIMER_AND_PATCH_EMULATION_20260826.md`。这些离线结果同样不能替代真实 RTOS、功耗和恢复测试。

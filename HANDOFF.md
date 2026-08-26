@@ -81,6 +81,8 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
 
 官方 DFU 实现没有发现读取整片 Flash 的命令；获得当前镜像只能依赖精确匹配的官方 OTA 包，或者识别芯片和测试点后通过 SWD/JTAG/厂商 Boot ROM 重复读取。
 
+2026-08-26 离线 IMU 候选已完成 ARMv6-M Thumb 指令级仿真和完整回归：39 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。原厂 FIFO 消费链和 callback 自停路径已有精确字节锚点；补丁及候选哈希未变化，仍强制标记 `NON_FLASHABLE`。MP Tool 的加密读回和 `Backup files` 均未证明可回写恢复，不能算设备完整备份。
+
 ## 明天优先继续
 
 精确步骤和当前逆向地址见 `NEXT_AI_HANDOFF.md`；以下旧清单只保留背景。

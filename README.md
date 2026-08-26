@@ -62,6 +62,8 @@ Windows 请在“以管理员身份运行”的 PowerShell 或命令提示符中
 
 候选协议采用 `A1 09 01/00` 启停、`A2 10` 10 Hz IMU 通知、12 秒固件硬超时和 8 秒主机续期；stale、序号跳变、校验错误、250 ms 无数据或无效重力都会急停并释放输入。详细设计和不可刷原因见 [`firmware_research/RT08_IMU_ONLY_STREAM_DESIGN_20260826.md`](firmware_research/RT08_IMU_ONLY_STREAM_DESIGN_20260826.md)。
 
+候选机器码已通过 8 个 ARMv6-M Thumb 指令级仿真场景和完整测试回归，但仍没有真实 RTOS、功耗、bank 激活和独立恢复验证，因此分类不变。验证细节见 [`firmware_research/RT08_TIMER_AND_PATCH_EMULATION_20260826.md`](firmware_research/RT08_TIMER_AND_PATCH_EMULATION_20260826.md)，唯一设备的恢复能力矩阵见 [`firmware_research/RECOVERY_READONLY_RUNBOOK.md`](firmware_research/RECOVERY_READONLY_RUNBOOK.md)。
+
 ## 三轴传感器可观测性测试（不刷固件）
 
 先完全退出手机官方 App 并关闭手机蓝牙。下面的命令会发送已知的 `A1 04 04`，记录 `A1 03` 三轴通知 20 秒，然后无论正常结束还是按 `Ctrl+C` 都会尝试发送 `A1 02`。测试期间绿灯可能闪烁、耗电会增加：

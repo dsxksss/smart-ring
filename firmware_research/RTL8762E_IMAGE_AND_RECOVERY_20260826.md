@@ -90,6 +90,8 @@ Realtek 官方量产工具文档确认 RTL8762x 支持 UART 下载和 Flash 读�
 
 MP Tool 的 Read 模式支持 4 KiB 对齐起点和最多 32 MiB 读取，但文档明确指出 RTL8762E 读回数据是加密的，且不支持 Read All。加密物理读回不能自动视为可恢复备份；还需要证明同芯片可原样回写、覆盖范围完整，并且不会漏掉 OTP/eFuse/系统配置依赖。
 
+MP Tool 的 `Backup files` 功能只复制当前工程配置的 RD 下载文件和 flash map，不会从连接的芯片导出完整 Flash。它与 RD readback 是不同功能，两者都不能在缺少回写演练时被称为“设备完整备份”。
+
 MP Tool 文档还确认 RD mode 默认关闭，需 Realtek 套件内的 RegistrySet Tool 开启；UART 下载使用 `P3_1/P3_0`，正常模式无法打开端口时可在复位期间拉低 `P0_3` 进入 MP mode。SDK 文档同时说明 `P0_3` 默认也是应用日志 UART，因此 PCB 上该焊盘可能承担复用功能，不能仅凭单一现象命名测试点。
 
 ## 恢复路径验收门槛
@@ -123,3 +125,5 @@ FCC 索引确认内部照片附件存在（3 页、报告号 `CTL2408273012-WF`�
 本文件记录的是恢复设计和硬门槛，不是对刷写的授权。
 
 官方 PDF 的本地复核哈希、页码和保守解释见 `OFFICIAL_REALTEK_EVIDENCE_20260826.md`。
+
+唯一设备的分阶段验收和逐项恢复能力矩阵见 `RECOVERY_READONLY_RUNBOOK.md`。
