@@ -231,7 +231,11 @@ def validate_image_info(stock: bytes) -> dict[str, Any]:
         },
         "ota_header_and_application_use_distinct_descriptor_fields": True,
         "ota_header_field_semantics_proven": False,
-        "application_field_semantics_proven": False,
+        "application_field_semantics": "T_IMG_HEADER_FORMAT.git_ver",
+        "application_field_semantics_proven": True,
+        "application_field_semantics_basis": (
+            "exact RTL8762E SDK structure plus stock resolver-object field accesses"
+        ),
         "rom_api_names_proven": False,
         "installed_ota_header_readback_proven": False,
         "bank_selection_proven": False,
@@ -239,7 +243,8 @@ def validate_image_info(stock: bytes) -> dict[str, Any]:
         "flash_authorized": False,
         "safety_note": (
             "The exact stock instructions prove only image-ID branching and field "
-            "offset dataflow. The ROM resolver, descriptor fields, installed bank "
+            "offset dataflow. The exact RTL8762E SDK identifies application +0x60 "
+            "as git_ver, but the OTA-header +0x194 field, ROM resolver, installed bank "
             "state, activation side effects, and rollback behavior remain unresolved."
         ),
     }

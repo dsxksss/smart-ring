@@ -81,7 +81,7 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
 
 官方 DFU 实现没有发现读取整片 Flash 的命令；获得当前镜像只能依赖精确匹配的官方 OTA 包，或者识别芯片和测试点后通过 SWD/JTAG/厂商 Boot ROM 重复读取。
 
-2026-08-26 离线 IMU 候选已完成 ARMv6-M Thumb 指令级仿真和完整回归：47 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。原厂 FIFO 消费链、callback 自停路径和通知连接检查已有精确字节锚点；当前 292 字节补丁会在断连后、读取 FIFO 和通知前立即停流。原厂激活函数通过 5 个指令级门控/地址场景；原厂 image-info 函数又通过 7 个场景确认 `0x2790` OTA Header ID 使用 resolver 对象 `+0x194`，应用 ID 范围使用 `+0x60`。未知 ROM 副作用、字段语义和 bank 选择仍未证明，候选继续强制标记 `NON_FLASHABLE`。MP Tool 的加密读回和 `Backup files` 均未证明可回写恢复，不能算设备完整备份；`verify_r08_readback_pair.py` 只验证两次离线读回的声明范围、长度、哈希和逐字节一致性，固定拒绝把一致读回升级为恢复或刷写授权。
+2026-08-26 离线 IMU 候选已完成 ARMv6-M Thumb 指令级仿真和完整回归：47 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。原厂 FIFO 消费链、callback 自停路径和通知连接检查已有精确字节锚点；当前 292 字节补丁会在断连后、读取 FIFO 和通知前立即停流。原厂激活函数通过 5 个指令级门控/地址场景；原厂 image-info 函数又通过 7 个场景确认 `0x2790` OTA Header ID 使用 resolver 对象 `+0x194`，应用 ID 范围使用 `+0x60`。精确 RTL8762E SDK 已把应用 `+0x60` 命名为 `T_IMG_HEADER_FORMAT.git_ver`；OTA Header `+0x194`、未知 ROM 副作用和 bank 选择仍未证明，候选继续强制标记 `NON_FLASHABLE`。MP Tool 的加密读回和 `Backup files` 均未证明可回写恢复，不能算设备完整备份；`verify_r08_readback_pair.py` 只验证两次离线读回的声明范围、长度、哈希和逐字节一致性，固定拒绝把一致读回升级为恢复或刷写授权。
 
 ## 明天优先继续
 

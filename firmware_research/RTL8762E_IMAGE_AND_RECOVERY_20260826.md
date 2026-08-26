@@ -80,7 +80,7 @@ address     = 0x00826000 + (file_offset - 0x50)
 
 `scripts/emulate_rt08_stock_activation.py` 又直接执行哈希锁定的原厂 `0x00826F2A..0x00826F87` Thumb 指令，并用确定性桩替代尚未命名的 ROM 调用。5 个场景证明：image ID 解析返回零时不会验证或提交；地址验证返回零时不会提交；验证成功时提交包装器收到的正是已验证地址；第二参数只在 `0x8B7A` 返回零的分支作为地址偏移加入；特殊 `0xFFFE` 路径先把 `0x80B8(5)` 的返回值与 `0x01000000` 合并。该仿真把应用层门控和地址数据流提升为指令级可重复证据，但 ROM 桩没有实现真实副作用，因此仍不能证明状态位、OTA Bank Header 或回滚。
 
-`scripts/emulate_rt08_stock_image_info.py` 进一步直接执行原厂 `0x00826C22..0x00826C99`，函数区域 SHA-256 为 `487c32ef6ce6a80bb30965141ea4fd611ba2ebd3392e35e79262418d0f40ccdf`。7 个场景确认：`image_id=0x2790` 会从 ROM `0x8AE2` 返回对象的 `+0x194` 取第一个输出；`0x2791..0x279A`（含应用 `0x2793`）和特殊 `0xFFFE` 则从 `+0x60` 取值；两个输出指针均为必需参数，resolver 返回零或 image ID 越界会失败。由此可证明原厂代码明确区分 OTA Header ID 与应用 ID，并使用不同描述对象字段，但还不能给 `+0x194/+0x60` 命名、不能证明它读取的是当前已安装 bank，也不能证明哪个上层路径在激活时调用该函数。报告继续把 installed-header readback、bank selection、runtime rollback 和刷写授权固定为 `false`。
+`scripts/emulate_rt08_stock_image_info.py` 进一步直接执行原厂 `0x00826C22..0x00826C99`，函数区域 SHA-256 为 `487c32ef6ce6a80bb30965141ea4fd611ba2ebd3392e35e79262418d0f40ccdf`。7 个场景确认：`image_id=0x2790` 会从 ROM `0x8AE2` 返回对象的 `+0x194` 取第一个输出；`0x2791..0x279A`（含应用 `0x2793`）和特殊 `0xFFFE` 则从 `+0x60` 取值；两个输出指针均为必需参数，resolver 返回零或 image ID 越界会失败。目标 RTL8762E 官方 `T_IMG_HEADER_FORMAT` 把应用头 `+0x60` 精确定义为 `git_ver`；原厂另两处调用同一 resolver 后分别读取对象 `+0` 的 `ic_type` 和 `+4` 的 `image_id`，因此普通应用分支的结构/字段语义已有交叉证据。`0x2790` 专用 `+0x194` 的字段名仍未知，也不能证明它读取的是当前已安装 bank，或哪个上层路径在激活时调用该函数。报告继续把 installed-header readback、bank selection、runtime rollback 和刷写授权固定为 `false`。
 
 因此，当前激活阻塞项不再简化表述为“应用 `git_ver` 同版本所以不会切换”，而是：R08 的 ROM 激活 API 参数和 OTA Bank Header 更新/选择语义尚未证明。取得 RTL8762E SDK 中对应 ROM 符号、OTA Header 定义和可复现实验前，不修改应用头那 8 个未知版本字节，也不把候选写入唯一设备。
 
