@@ -14,8 +14,19 @@ cargo build -p r08 --release
 
 `self-check` 不连接戒指，只报告当前操作系统的 BLE/HID/注入后端是否可用。云环境或无蓝牙电脑上显示 `ble_adapter=not-found` 是正常的。
 
+推荐直接进入数字交互菜单。省略子命令也会进入同一菜单：
+
+```powershell
+.\target\release\r08.exe interactive
+# 或
+.\target\release\r08.exe
+```
+
+菜单启动时触控和电脑控制均关闭。输入 `1` 仅监听触控，输入 `2` 开启电脑控制，输入 `3` 暂停电脑控制，输入 `4` 关闭触控，输入 `5` 查看状态，输入 `0` 安全退出。
+
 | 命令 | 作用 |
 | --- | --- |
+| `r08 interactive` | 数字菜单；运行 `r08` 时的默认模式 |
 | `r08 self-check` | 打印平台能力；默认不注入 |
 | `r08 scan` | 扫描 `R08_9C07` |
 | `r08 device-info` | 只读 Device Information，不写特征 |
@@ -23,9 +34,9 @@ cargo build -p r08 --release
 | `r08 control` | 注入：上下滑→滚轮，双击复制，三击粘贴 |
 | `r08 disable-touch` | 发送官方 `0x3B` 关闭触控 |
 
-快捷脚本：`scripts/start_r08_control.sh` / `.bat`，停止用 `scripts/stop_r08_touch.sh` / `.bat`。控制模式会把日志同时写到 `r08-control-latest.log`。退出请按 Enter；Ctrl+C 也会释放按键并关闭触控。
+快捷脚本：`scripts/start_r08_control.sh` / `.bat`，停止用 `scripts/stop_r08_touch.sh` / `.bat`。交互和控制模式会把日志同时写到 `r08-control-latest.log`。菜单输入 `0` 或按 Ctrl+C 都会释放按键并关闭触控。
 
-运行时请完全退出手机官方 App 并关闭手机蓝牙。程序只匹配 `R08_9C07` / `31:31:45:37:9C:07`，普通鼠标不参与映射。控制功能必须显式使用 `control`，`listen` 和调试默认关闭注入。
+运行时请完全退出手机官方 App 并关闭手机蓝牙。程序只匹配 `R08_9C07` / `31:31:45:37:9C:07`，普通鼠标不参与映射。交互菜单必须选择 `2` 才会注入电脑操作；菜单初始状态、`listen` 和调试模式默认关闭注入。
 
 三平台差异：
 

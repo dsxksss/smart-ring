@@ -19,11 +19,21 @@ use tracing_subscriber::fmt::MakeWriter;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the numeric interactive menu. This is the default when no command is supplied.
+    #[command(alias = "shell")]
+    Interactive {
+        #[arg(long, default_value_t = 2)]
+        touch_type: u8,
+        #[arg(long, default_value_t = 1)]
+        sleep_minutes: u8,
+        #[arg(long, default_value_t = 4)]
+        scroll_gain: i32,
+    },
     /// Print OS/BLE/HID/inject support without touching the ring.
     SelfCheck,
     /// Scan for R08_9C07.
@@ -66,9 +76,37 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let logging = matches!(cli.command, Command::Control { .. });
+    let command = cli.command.unwrap_or(Command::Interactive {
+        touch_type: 2,
+        sleep_minutes: 1,
+        scroll_gain: 4,
+    });
+    let logging = matches!(
+        &command,
+        Command::Control { .. } | Command::Interactive { .. }
+    );
     init_tracing(logging)?;
-    match cli.command {
+    match command {
+        Command::Interactive {
+            touch_type,
+            sleep_minutes,
+            scroll_gain,
+        } => {
+            println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
+            let connection = ble::connect(30).await?;
+            session::run(
+                connection,
+                SessionOptions {
+                    inject: false,
+                    touch_on_start: false,
+                    touch_type,
+                    sleep_minutes,
+                    scroll_gain,
+                    seconds: 0,
+                },
+            )
+            .await
+        }
         Command::SelfCheck => self_check().await,
         Command::Scan { seconds } => {
             let found = ble::scan(seconds).await?;
@@ -98,11 +136,13 @@ async fn main() -> Result<()> {
             touch_type,
             sleep_minutes,
         } => {
+            println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
             let connection = ble::connect(30).await?;
             session::run(
                 connection,
                 SessionOptions {
                     inject: false,
+                    touch_on_start: true,
                     touch_type,
                     sleep_minutes,
                     scroll_gain: 4,
@@ -117,11 +157,13 @@ async fn main() -> Result<()> {
             sleep_minutes,
             scroll_gain,
         } => {
+            println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
             let connection = ble::connect(30).await?;
             session::run(
                 connection,
                 SessionOptions {
                     inject: true,
+                    touch_on_start: true,
                     touch_type,
                     sleep_minutes,
                     scroll_gain,

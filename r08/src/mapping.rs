@@ -106,6 +106,23 @@ impl MappingEngine {
         self.config.inject
     }
 
+    pub fn set_inject_enabled(&mut self, enabled: bool) {
+        self.config.inject = enabled;
+        self.clear_pending_actions();
+    }
+
+    pub fn clear_pending_actions(&mut self) {
+        self.tap_count = 0;
+        self.last_tap_ms = None;
+        self.tap_deadline_ms = None;
+        self.scroll_queue.clear();
+        self.scroll_direction = 0;
+        self.reset_held_scroll();
+        self.ring_button_down = false;
+        self.ring_gesture_moved = false;
+        self.last_hid_vertical_ms = None;
+    }
+
     pub fn handle(&mut self, event: InputEvent, now_ms: u64) -> Vec<Output> {
         let mut out = Vec::new();
         match event {
@@ -678,5 +695,21 @@ mod tests {
         let tick = engine.tick(HOLD_FAST_MS + 10);
         let wheels: Vec<_> = outputs_of(|item| matches!(item, Output::Wheel(_)), &tick);
         assert_eq!(wheels, vec![&Output::Wheel(HOLD_FAST_STEP)]);
+    }
+
+    #[test]
+    fn changing_control_state_discards_pending_actions() {
+        let mut engine = inject_engine();
+        engine.handle(gatt_action(3), 0);
+        engine.handle(gatt_action(1), 10);
+        engine.handle(gatt_action(1), 210);
+
+        engine.set_inject_enabled(false);
+        assert!(!engine.inject_enabled());
+        assert!(engine.tick(2_000).is_empty());
+
+        engine.set_inject_enabled(true);
+        assert!(engine.inject_enabled());
+        assert!(engine.tick(2_010).is_empty());
     }
 }

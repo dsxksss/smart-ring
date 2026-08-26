@@ -98,7 +98,7 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
    dotnet build native_ble\R08NativeCli.csproj -c Release
    ```
 
-2. 用 `r08 listen` 确认 GATT 动作后再开 `r08 control`。Linux 需要 `input` 组与 `/dev/uinput`；macOS 需要辅助功能权限，且精细相对 Y 不可用。
+2. 推荐用 `r08 interactive` 的数字菜单：先选 `1` 确认 GATT 动作，再选 `2` 开启电脑控制；`4` 关闭触控，`0` 安全退出。Linux 需要 `input` 组与 `/dev/uinput`；macOS 需要辅助功能权限，且精细相对 Y 不可用。
 3. 手机安装/登录官方 App，连接戒指，进入“我的 → 固件升级”。只允许服务器检查和下载；**不要确认升级**。
 4. 检查 `/sdcard/Android/data/com.qcwireless.ring/files/dfu/`。如出现 `.bin`，先原样拉取、只读保存两份，并记录来源、长度和 SHA-256。
 5. 如果 App 明确显示“已是最新版本”且不缓存当前包，联系厂商索取 `RT08_V3.1 / RT08_3.10.48_260309` 原厂包，或在授权范围内记录 App 正常会话的 OTA 响应。不要使用硬编码/default token。

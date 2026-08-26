@@ -18,9 +18,10 @@ if not exist "target\release\r08.exe" (
 )
 
 echo Close the phone ring app and turn off phone Bluetooth first.
-echo Injection starts after CONTROL_READY. Press Enter in this window to stop.
+echo The numeric menu starts with touch and computer control disabled.
+echo Choose 2 to start computer control, or 0 to exit safely.
 echo.
-target\release\r08.exe control --touch-type 2 --sleep-minutes 1 --scroll-gain 4
+target\release\r08.exe interactive --touch-type 2 --sleep-minutes 1 --scroll-gain 4
 echo.
 echo Controller stopped.
 echo Full log: %CD%\r08-control-latest.log
