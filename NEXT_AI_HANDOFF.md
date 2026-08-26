@@ -48,6 +48,12 @@ cargo build -p r08 --release
 
 资料包说明、分卷恢复和 SHA-256 见 `research_artifacts/README.md`。其中没有 ADB 配对码、登录令牌或附近无关 BLE 扫描数据。
 
+## 2026-08-27 不拆机约束覆盖旧路线
+
+用户明确拒绝拆开戒指，并且不会购买第二枚。不要再执行或建议下面旧清单中的 PCB 照片、测试点、UART、SWD 和自行购买牺牲机步骤。哈希锁定的 `scripts/analyze_rt08_software_recovery.py` 已确认：HCI 启动旁路检查存在但应用没有 setter 调用，标准 pre-main BLE OTA 没有编入，本地 `dfu_switch_to_ota_mode` 没有找到静态引用，实际 QRing DFU 复位位于应用处理链。因此当前只能做应用仍可启动时的覆盖恢复，不能救援启动失败或 Bootloader copy 中断。
+
+当前可继续的无拆机路线只有：完善默认休眠/命令试运行/硬超时的软件隔离；向厂商取得可执行的返厂重刷或签名自定义固件服务；如果厂商愿意借出同硬件样机，再做真机安装和恢复矩阵。用户唯一戒指继续禁止发送 DFU。最新回归为 59 个 Python 固件研究测试、14 个 Python 控制器测试、59 个 Rust 库测试和 1 个 Rust 主程序测试，Rust fmt、clippy `-D warnings`、Release 构建通过。详见 `firmware_research/SOFTWARE_ONLY_RECOVERY_STRATEGY_20260827.md`。
+
 ## 下一阶段准确任务
 
 1. SDK 符号和头结构已经完成，不要重复。下一步恢复 R08 应用之外的实际 Flash map、当前 OTA Header/系统配置依赖，并确认 bootloader copy 的源、目标、状态位和断电恢复点。

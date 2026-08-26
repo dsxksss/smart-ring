@@ -122,6 +122,10 @@ SDK v1.5.0 内嵌 BeeMPTool 的哈希、UART/MP 入口、真实 PE 导出、CLI 
 
 唯一设备的只读接线、身份读取、双读一致性和回写演练门槛见 `RECOVERY_READONLY_RUNBOOK.md`。该清单不是拆机或刷写授权。
 
+用户已明确排除拆机。哈希锁定的原厂镜像审计确认：R08 虽保留启动早期 HCI 模式检查，但应用没有设置该标志的调用；SDK 标准的启动前 BLE OTA 检查也未编入目标。镜像中保留的 `dfu_switch_to_ota_mode` 没有找到静态调用或函数指针引用，实际 QRing DFU 复位路径位于正常应用协议处理内。因此无拆机条件下当前只能证明“应用仍能启动时可覆盖恢复”，不能救援应用启动失败或 Bootloader 搬运中断。完整证据与不拆机替代路线见 `SOFTWARE_ONLY_RECOVERY_STRATEGY_20260827.md`，复核工具为 `scripts/analyze_rt08_software_recovery.py`。
+
+最新完整回归为 59 个 Python 固件研究测试、14 个 Python 控制器测试、59 个 Rust 库测试和 1 个 Rust 主程序测试。用户不会购买第二枚设备；同硬件验证机仅可能来自外借或厂商样机，不能把“再买一枚”写成默认下一步。
+
 最终证据可用 `scripts/audit_r08_flash_readiness.py` 按 `flash_readiness.example.json` 做 fail-closed 审计。12 个技术门禁必须引用哈希匹配的实际证据；破坏性试验只接受等价非唯一硬件。即使全部通过，该工具仍固定输出 `flash_authorized=false`，不会替代最终的人类授权。
 
 两份真实只读文件到位后，可用 `scripts/verify_r08_readback_pair.py` 离线核对声明范围、长度、SHA-256 和逐字节一致性。工具只会给出 `READBACK_REPEATABILITY_ONLY`，不会把相同但语义尚未确认的明文/密文读回误报成可恢复的完整备份，且始终保持 `flash_authorized=false`。

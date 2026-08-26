@@ -85,6 +85,10 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
 
 2026-08-27 离线 IMU 候选已完成 ARMv6-M Thumb 指令级仿真和完整回归：57 个 Python 测试、59 个 Rust 库测试、1 个 Rust 主程序测试，Release 构建成功。原厂 FIFO 消费链、callback 自停路径和通知连接检查已有精确字节锚点；当前 292 字节补丁会在断连后、读取 FIFO 和通知前立即停流。原厂激活函数通过 5 个指令级门控/地址场景；原厂 image-info 函数通过 7 个场景。SDK 官方 ROM 符号已精确命名 `0x8AE2 get_header_addr_by_img_id`、`0x8B94 get_temp_ota_bank_addr_by_img_id`、`0x8B7A is_ota_support_bank_switch`、`0x8A5C check_image_chksum`、`0x3ED1A dfu_set_ready`；OTA `+0x194` 是 `T_OTA_HEADER_FORMAT.ver_val`，应用 `+0x60` 是 `git_ver.ver_info.version`。`scripts/verify_rtl8762e_sdk_v1_5_0.py` 直接验证 ZIP 的 10 个关键成员和内嵌 BeeMPTool 的 7 个成员，不执行厂商程序。BeeMPTool 文档/导出表确认 P0_3 复位 trap、P3_0/P3_1 UART、Flash/eFuse 读取路径及 RTL8762E 目标端代理；但工具没有公开稳定 CLI，EXE/DLL 未签名，目标测试点、安全等级和读回明文/密文语义均未确认。OTA 手册确认由 boot program 从 OTA Temp 搬到 Bank0，但未承诺掉电恢复；安全手册确认 SWD 在安全等级 1-3 被关闭，R08 当前等级未读取。候选继续强制标记 `NON_FLASHABLE`：R08 安装 Header/实际 Flash Map、bootloader copy 掉电矩阵、独立恢复及第二枚设备测试仍未完成。MP Tool 的任何读回和 `Backup files` 均未证明可回写恢复，不能算设备完整备份；`verify_r08_readback_pair.py` 只验证两次离线读回的声明范围、长度、哈希和逐字节一致性，固定拒绝把一致读回升级为恢复或刷写授权。`audit_r08_flash_readiness.py` 按 12 个证据门禁拒绝空声明、错哈希、唯一设备破坏性测试、同一次冷启动双读和同一物理介质双备份；即使技术门禁全过也固定不授权刷写。
 
+2026-08-27 用户明确排除拆机。`scripts/analyze_rt08_software_recovery.py` 对精确原厂镜像完成无设备写入审计：目标在 `0x00826666` 保留启动早期 HCI mode 检查，但没有 ROM `set_hci_mode_flag` 调用；没有 ROM `dfu_check_ota_mode_flag` 调用，说明标准 pre-main BLE OTA 未编入；本地 `dfu_switch_to_ota_mode` 存在但没有找到直接调用或 LDR literal 函数指针引用；实际 QRing DFU 完成后在应用代码 `0x0082D6B8` 调用复位。因此当前分类为 `APPLICATION_DEPENDENT_SOFTWARE_RECOVERY_ONLY`：应用和 BLE 服务能启动时可覆盖原厂包，启动失败和 Bootloader copy 中断无法恢复。可行替代是第二枚完全相同 `RT08_V3.1` 牺牲测试机，或厂商可执行的工厂重刷/签名固件服务；详见 `firmware_research/SOFTWARE_ONLY_RECOVERY_STRATEGY_20260827.md`。
+
+最新完整回归为 59 个 Python 固件研究测试、14 个 Python 控制器测试、59 个 Rust 库测试和 1 个 Rust 主程序测试；Rust fmt、clippy `-D warnings` 和 Release 构建全部通过。用户此前已说明不会购买第二枚设备，因此“第二枚设备”只允许表述为外借或厂商提供的测试样机，当前唯一现实的独立恢复替代是取得厂商可执行的返厂重刷/签名固件服务。
+
 ## 明天优先继续
 
 精确步骤和当前逆向地址见 `NEXT_AI_HANDOFF.md`；以下旧清单只保留背景。
