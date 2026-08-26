@@ -25,6 +25,7 @@
 - FCC ID `2AOM3-R08` 有公开内部照片，但当前镜像站点阻止自动取得原始 PDF，PCB 测试点仍需高清照片确认。
 - 原厂 OTA 接收端只允许把去掉 QRing 包装的应用写入 `0x0084E000..0x00872000`；末端 `0x00872000` 已由原厂应用作为至少两个 4 KiB 页的持久化存储起点，不能把它当作可扩展代码空间。
 - OTA End 确实以参数 `(image_id=0x2793, second_argument=0)` 进入 `0x00826F2A` 激活链，并经过 ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A`；应用头 `git_ver` 没有直接作为激活参数。这些地址的官方符号、OTA Bank Header 更新/选择、运行时崩溃回滚和掉电恢复仍未证明。
+- 原厂 `0x00826C22` 的指令级仿真确认 `0x2790` 与 `0x2793` 走不同描述字段：OTA Header ID 使用 resolver 对象 `+0x194`，应用 ID 范围使用 `+0x60`。这只证明数据流分流，不等同于已读取设备上的 bank 状态，也没有证明字段语义或激活调用关系。
 
 ## 当前离线实现
 
@@ -50,6 +51,8 @@
 py firmware_research\scripts\inspect_r08_image.py path\to\RT08_candidate.bin
 py firmware_research\scripts\analyze_rt08_ota_path.py research_artifacts\firmware\RT08_3.10.48_260309.bin
 py firmware_research\scripts\analyze_rt08_boot_activation.py research_artifacts\firmware\RT08_3.10.48_260309.bin
+py firmware_research\scripts\emulate_rt08_stock_activation.py research_artifacts\firmware\RT08_3.10.48_260309.bin
+py firmware_research\scripts\emulate_rt08_stock_image_info.py research_artifacts\firmware\RT08_3.10.48_260309.bin
 py -m unittest discover -s firmware_research\scripts -p "test_*.py"
 ```
 
