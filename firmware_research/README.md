@@ -112,13 +112,15 @@ APK 本身不内置固件 `.bin`。
 
 IMU 连续滚动的独立通知协议、12 秒固件硬超时、8 秒主机续期和安全停止条件见 `RT08_IMU_ONLY_STREAM_DESIGN_20260826.md`。已实现 292 字节离线 patch 对象和显式 `imu-stream` 主机命令，但候选仍是 `NON_FLASHABLE`，不是可刷固件授权。
 
-补丁机器码已在 ARMv6-M Thumb 仿真中通过 9 个启动、通知、断连、陈旧数据和停止场景；原厂 `0x0083394E` 消费路径会在启用标志置位后先调用 `0x00832F9C` 排空 LIS3DH FIFO，目标固件也存在 timer callback 内停止同一 timer 的原厂路径。原厂通知包装器的连接检查也已加入精确锚点，补丁每个 tick 直接检查连接，断连时在读取 FIFO 和通知前立即停流。原厂激活函数另通过 5 个 resolver、validator、条件偏移和提交场景的 Thumb 指令级仿真，原厂 image-info 函数通过 7 个 ID 分流、失败和指针检查场景。2026-08-26 完整回归为 47 个 Python 测试、59 个 Rust 库测试和 1 个 Rust 主程序测试，Release 构建成功。当前对象为 292 字节；这些结果不证明真实 RTOS 时序、功耗、ROM 激活副作用、bank 回滚或硬件恢复，详见 `RT08_TIMER_AND_PATCH_EMULATION_20260826.md` 和 `RTL8762E_IMAGE_AND_RECOVERY_20260826.md`。
+补丁机器码已在 ARMv6-M Thumb 仿真中通过 9 个启动、通知、断连、陈旧数据和停止场景；原厂 `0x0083394E` 消费路径会在启用标志置位后先调用 `0x00832F9C` 排空 LIS3DH FIFO，目标固件也存在 timer callback 内停止同一 timer 的原厂路径。原厂通知包装器的连接检查也已加入精确锚点，补丁每个 tick 直接检查连接，断连时在读取 FIFO 和通知前立即停流。原厂激活函数另通过 5 个 resolver、validator、条件偏移和提交场景的 Thumb 指令级仿真，原厂 image-info 函数通过 7 个 ID 分流、失败和指针检查场景。2026-08-27 完整回归为 52 个 Python 测试、59 个 Rust 库测试和 1 个 Rust 主程序测试，Release 构建成功。当前对象为 292 字节；这些结果不证明真实 RTOS 时序、功耗、ROM 激活副作用、bank 回滚或硬件恢复，详见 `RT08_TIMER_AND_PATCH_EMULATION_20260826.md` 和 `RTL8762E_IMAGE_AND_RECOVERY_20260826.md`。
 
 关键固件地址可用 `scripts/verify_rt08_imu_stream_anchors.py` 对官方镜像做只读复核。Rust 端的 `imu-stream` 子命令会核对精确硬件/固件身份，默认只监听；只有同时显式确认未验证候选并传入 `--inject` 才会注入滚轮。它不会刷写固件，原厂固件也不会响应该候选命令。
 
 镜像基址纠正、Realtek 头字段、MP 模式与恢复门槛见 `RTL8762E_IMAGE_AND_RECOVERY_20260826.md`。旧分析中的 Flash 地址已经按正确基址整体平移 `+0x2000`；文件偏移和原始字节不变。
 
 唯一设备的只读接线、身份读取、双读一致性和回写演练门槛见 `RECOVERY_READONLY_RUNBOOK.md`。该清单不是拆机或刷写授权。
+
+最终证据可用 `scripts/audit_r08_flash_readiness.py` 按 `flash_readiness.example.json` 做 fail-closed 审计。12 个技术门禁必须引用哈希匹配的实际证据；破坏性试验只接受等价非唯一硬件。即使全部通过，该工具仍固定输出 `flash_authorized=false`，不会替代最终的人类授权。
 
 两份真实只读文件到位后，可用 `scripts/verify_r08_readback_pair.py` 离线核对声明范围、长度、SHA-256 和逐字节一致性。工具只会给出 `READBACK_REPEATABILITY_ONLY`，不会把相同的加密读回误报成可恢复的完整备份，且始终保持 `flash_authorized=false`。
 

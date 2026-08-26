@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "target": {
+    "hardware_revision": "RT08_V3.1",
+    "stock_firmware_revision": "RT08_3.10.48_260309",
+    "stock_sha256": "c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b"
+  },
+  "candidate": {
+    "path": "path/to/NON_FLASHABLE-candidate.bin",
+    "sha256": "replace-with-verified-candidate-sha256"
+  },
+  "gates": {
+    "exact_rtl8762e_sdk_and_ota_semantics": {"status": "not_proven", "evidence": []},
+    "mcu_flash_identity_and_protection_read_twice": {"status": "not_proven", "evidence": []},
+    "complete_flash_map_and_security_policy": {"status": "not_proven", "evidence": []},
+    "complete_cold_boot_readback_pair": {"status": "not_proven", "evidence": []},
+    "dual_physical_backup": {"status": "not_proven", "evidence": []},
+    "same_chip_readback_restore": {"status": "not_proven", "evidence": []},
+    "independent_recovery_with_broken_application": {"status": "not_proven", "evidence": []},
+    "stock_restore_after_erase": {"status": "not_proven", "evidence": []},
+    "copy_activation_power_loss_matrix": {"status": "not_proven", "evidence": []},
+    "candidate_runtime_ble_power_validation": {"status": "not_proven", "evidence": []},
+    "candidate_failure_and_recovery_matrix": {"status": "not_proven", "evidence": []},
+    "candidate_diff_and_offline_regression": {"status": "not_proven", "evidence": []}
+  }
+}

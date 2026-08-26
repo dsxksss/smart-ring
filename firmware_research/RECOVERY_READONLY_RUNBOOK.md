@@ -91,3 +91,13 @@ py firmware_research\scripts\verify_r08_readback_pair.py cold-boot-a.bin cold-bo
 - 用户在看到最终风险和恢复步骤后，明确授权具体目标、具体镜像哈希和具体刷写动作。
 
 在此之前，所有生成镜像继续带 `NON_FLASHABLE`/`flash_allowed=false`，程序不暴露 DFU 写入入口。
+
+## 机器可验证的最终门禁
+
+`scripts/audit_r08_flash_readiness.py` 把上述条件拆成 12 个必须同时通过的技术门禁。示例清单为 `flash_readiness.example.json`；每条 `proven` 都必须引用真实存在且 SHA-256 匹配的本地证据文件，不能只填布尔值。涉及擦除、回写、故障启动、掉电或候选运行的证据必须标记为 `equivalent_non_unique_hardware`，并携带等价测试目标的脱敏身份哈希；唯一戒指上的破坏性证据会被拒绝。双读必须来自两个不同 cold boot，双备份必须位于两个不同物理介质。
+
+```powershell
+py firmware_research\scripts\audit_r08_flash_readiness.py path\to\flash_readiness.json
+```
+
+门禁不齐时退出码为 `3`。即使 12 项全部通过，报告也固定输出 `flash_authorized=false`：它最多证明技术材料齐全，不能代替用户针对“具体设备 + 具体候选 SHA-256”的最终明确授权。
