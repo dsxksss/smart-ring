@@ -14,14 +14,15 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 ## SDK User Guide 能证明的事项
 
 - PDF 第 23-24 页（印刷页 15-16）描述 RTL8762E 双 bank 启动：先选择版本更高的 OTA bank，镜像检查/解密失败才检查另一 bank。
+- PDF 第 23 页的启动图先执行 `Check OTA Headers`，在两个 OTA Header 都有效时才进入 `Dual Bank Process`；第 41 页又明确 `OTA Header File` 是独立镜像，用来定义 Flash bank 布局。因此 R08 应用头和 OTA Bank Header 是不同对象。
 - 该流程图只覆盖启动时镜像检查和解密。它没有说明两个 bank 版本完全相同时选哪一个，也没有说明结构有效但应用运行后 HardFault 是否回滚。
 - PDF 第 42-43 页（印刷页 34-35）给出 1024 字节应用头结构：`not_ready`、`not_obsolete`、`integrity_check_en_in_boot` 位，以及 `T_VERSION_FORMAT git_ver`、RSA 公钥、SHA-256 和保留区的顺序。
 - 手册没有展开 `T_VERSION_FORMAT` 字段定义，因此 R08 头偏移 `0x60` 的 `41 10 00 00 9e a3 01 12` 仍不得当作普通版本号递增。
 - SDK 文档说明 `P0_3` 默认用作应用日志 UART。这与 MP mode trap 使用同一引脚并不矛盾，但意味着 PCB 测试点必须结合复位时序和走线确认。
 
-## 相邻系列 OTA Header 证据
+## OTA Header 补充证据
 
-RealMCU 官方 RTL8762C OTA User Manual：`https://www.realmcu.com/img/ipd/en_638290111802009694.pdf`。该手册说明每个 bank 具有独立 4 KiB OTA Header，包含 bank 版本以及各镜像地址和大小；新 bank 的 OTA Header 版本需高于当前 bank 才有效。它只用于区分“应用镜像头 `git_ver`”与“OTA Bank Header 版本”这两个概念，不能替代 RTL8762E SDK/ROM 的精确语义，也不能证明 R08 会如何更新或选择 Bank Header。
+目标系列 RTL8762E SDK User Guide 已直接证明 OTA Header 与应用镜像头是不同对象，但没有公开 OTA Header 的逐字段定义。RealMCU 官方 RTL8762C OTA User Manual：`https://www.realmcu.com/img/ipd/en_638290111802009694.pdf` 进一步说明每个 bank 的 OTA Header 为独立 4 KiB，包含 bank 版本以及各镜像地址和大小。RTL8762C 的布局细节只作相邻系列补充，不能替代 RTL8762E ROM API 的精确语义，也不能证明 R08 的自定义 DFU 如何更新或选择 Bank Header。
 
 ## MP Tool User Guide 能证明的事项
 

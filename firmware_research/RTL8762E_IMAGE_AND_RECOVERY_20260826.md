@@ -72,7 +72,7 @@ address     = 0x00826000 + (file_offset - 0x50)
 
 这些描述符证明应用会管理或引用 OTA 槽之后的大部分地址空间，并把观察到的最高末端推进到 `0x00880000`；`0x0087A000..0x0087B000` 仍未分类。RTL8762E 官方产品线存在 512 KiB 和 1 MiB Flash 变体，因此在 MP/UART 只读取得 Flash ID 前，不能仅凭最高引用地址宣布物理容量就是 512 KiB，也不能给这些区域擅自命名。`analyze_rt08_ota_path.py` 会验证全部 23 个 OTA、相邻存储与描述符锚点并固定报告 `physical_flash_capacity_proven=false`。
 
-Realtek 官方 SDK 说明双 bank 启动时会先检查版本较高的应用；若认证/解密失败，再检查另一 bank。官方相邻系列 RTL8762C OTA 手册进一步说明，每个 bank 有独立 4 KiB OTA Header，其中保存 bank 版本、各镜像地址和大小；只有 OTA Header 版本高于当前 bank 才被视为可切换的新 bank。该资料不是目标 RTL8762E ROM 的精确实现证明，却说明应用镜像头的 `git_ver` 与 bank 选择版本不能混为一谈，也没有证明“头部结构有效但进入应用后崩溃”会自动回滚。
+目标系列 RTL8762E SDK User Guide 的启动图先执行 `Check OTA Headers`，两个 Header 都有效时才进入双 bank 流程；下载章节又把 `OTA Header File` 明确定义为独立于 App Image、用于描述 Flash bank 布局的镜像。双 bank 流程先检查版本更高的 OTA bank，认证/解密失败才检查另一 bank。官方相邻系列 RTL8762C OTA 手册进一步给出每个 bank 独立 4 KiB OTA Header 的字段示例。由此已能确定应用镜像头与 OTA Bank Header 不是同一对象，但仍不能从公开手册确定 R08 ROM 如何比较 Header/应用版本，也没有证明“头部结构有效但进入应用后崩溃”会自动回滚。
 
 `scripts/analyze_rt08_boot_activation.py` 已把原厂 OTA End 与应用内激活链固定为 6 组精确字节锚点：OTA End 以参数 `(image_id=0x2793, second_argument=0)` 调用 `0x00826F2A`，后者可到达 ROM `0x00008B94`、`0x00008B7A`、`0x00008A5C`，成功分支再经 `0x00826F16` 调用 ROM `0x0003ED1A`。报告同时锁定 control flags `0x0981`、零 SHA 字段及头偏移 `0x60` 的原始 8 字节版本结构 `41 10 00 00 9e a3 01 12`；这些 `git_ver` 字节并未直接作为激活参数传入。尚无授权 SDK 符号能可靠命名这些 ROM API，也未证明 ROM 如何更新或选择独立 OTA Bank Header；分析器因此固定输出 OTA Bank Header 更新、bank 选择、运行时回滚、掉电恢复和刷写授权均为 `false`。
 
