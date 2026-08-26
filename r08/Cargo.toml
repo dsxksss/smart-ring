@@ -1,0 +1,36 @@
+[package]
+name = "r08"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Cross-platform R08 smart ring BLE/HID controller"
+publish = false
+
+[dependencies]
+anyhow = "1"
+btleplug = "0.11"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "io-std", "io-util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.12"
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = { version = "0.24", features = ["highsierra"] }

@@ -18,11 +18,12 @@ git push -u origin main
 
 ### Windows 控制程序
 
-- Python BLE 调试 GUI：`smart_ring_detector.py`
-- Windows 原生 HID/GATT 控制：`native_ble/`
+- 跨平台 Rust 控制器：`r08/`（Windows / Linux / macOS）
+- Python BLE 调试 GUI：`smart_ring_detector.py`（Windows 遗留）
+- Windows 原生 HID/GATT 控制：`native_ble/`（Windows 遗留）
 - R08 动作录制、验证和 GATT CLI：`record_r08_actions.py`、`verify_r08_touch.py`、`r08_gatt_cli.py`
-- 单元测试：`test_smart_ring_detector.py`
-- Windows 启动/停止脚本：根目录下的 `.bat` 文件
+- 单元测试：Rust `cargo test --workspace`；Python `test_smart_ring_detector.py`
+- 启动/停止脚本：`scripts/start_r08_control.*`、`scripts/stop_r08_touch.*`，以及根目录 Windows `.bat`
 
 已确认动作映射：
 
@@ -81,7 +82,15 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
 
 ## 明天优先继续
 
-1. 在公司电脑克隆本仓库，先运行测试和原生构建：
+1. 在有戒指的电脑上克隆本仓库，先跑 Rust 测试和 Release 构建：
+
+   ```bash
+   cargo test --workspace
+   cargo build -p r08 --release
+   cargo run -p r08 --release -- self-check
+   ```
+
+   Windows 若仍使用遗留工具：
 
    ```powershell
    py -m pip install -r requirements.txt
@@ -89,12 +98,13 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
    dotnet build native_ble\R08NativeCli.csproj -c Release
    ```
 
-2. 手机安装/登录官方 App，连接戒指，进入“我的 → 固件升级”。只允许服务器检查和下载；**不要确认升级**。
-3. 检查 `/sdcard/Android/data/com.qcwireless.ring/files/dfu/`。如出现 `.bin`，先原样拉取、只读保存两份，并记录来源、长度和 SHA-256。
-4. 如果 App 明确显示“已是最新版本”且不缓存当前包，联系厂商索取 `RT08_V3.1 / RT08_3.10.48_260309` 原厂包，或在授权范围内记录 App 正常会话的 OTA 响应。不要使用硬编码/default token。
-5. 取得镜像后只做离线识别：文件头、熵、字符串、ARM 向量表、装载地址、分区、签名/加密/反回滚。
-6. 拆机或探测测试点前先拍摄高清 PCB 双面照片，确认 MCU/SoC 型号、供电电压和 SWD/JTAG/串口焊盘；不要盲接 5V。
-7. 只有 `firmware_research/README.md` 的全部防变砖门槛满足后，才讨论修改或刷写。
+2. 用 `r08 listen` 确认 GATT 动作后再开 `r08 control`。Linux 需要 `input` 组与 `/dev/uinput`；macOS 需要辅助功能权限，且精细相对 Y 不可用。
+3. 手机安装/登录官方 App，连接戒指，进入“我的 → 固件升级”。只允许服务器检查和下载；**不要确认升级**。
+4. 检查 `/sdcard/Android/data/com.qcwireless.ring/files/dfu/`。如出现 `.bin`，先原样拉取、只读保存两份，并记录来源、长度和 SHA-256。
+5. 如果 App 明确显示“已是最新版本”且不缓存当前包，联系厂商索取 `RT08_V3.1 / RT08_3.10.48_260309` 原厂包，或在授权范围内记录 App 正常会话的 OTA 响应。不要使用硬编码/default token。
+6. 取得镜像后只做离线识别：文件头、熵、字符串、ARM 向量表、装载地址、分区、签名/加密/反回滚。
+7. 拆机或探测测试点前先拍摄高清 PCB 双面照片，确认 MCU/SoC 型号、供电电压和 SWD/JTAG/串口焊盘；不要盲接 5V。
+8. 只有 `firmware_research/README.md` 的全部防变砖门槛满足后，才讨论修改或刷写。
 
 ## 明确禁止
 

@@ -19,6 +19,8 @@ firmware_research/*.png
 # Build outputs
 native_ble/bin/
 native_ble/obj/
+/target/
+r08/target/
 
 # Local IDE/runtime files
 .vs/

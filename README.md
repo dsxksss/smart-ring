@@ -1,16 +1,51 @@
 # 智能戒指 BLE 动作检测器
 
-## R08_9C07 原生 Windows 连接（推荐）
+跨平台控制器是 Rust 程序 `r08`，支持 **Windows、Linux、macOS**。旧的 Python GUI 和 C# `R08NativeCli` 仍保留为 Windows 遗留工具，新的开发与 CI 以 Rust 为准。
 
-如果 Windows 设置里已经配对 `R08_9C07`，但 Python/Bleak 连接报权限错误，直接双击 `start_native_control.bat`。这个版本通过 Windows 原生 GATT API 打开已配对戒指，不依赖“隐私和安全性 → 其他设备”中的桌面应用列表；该列表为空不影响使用。
+## 跨平台 Rust 控制器（推荐）
+
+需要 Rust 1.85+（<https://rustup.rs>）。Linux 编译还需要 `libdbus-1-dev` 和 `pkg-config`。
+
+```bash
+cargo test --workspace
+cargo build -p r08 --release
+./target/release/r08 self-check
+```
+
+`self-check` 不连接戒指，只报告当前操作系统的 BLE/HID/注入后端是否可用。云环境或无蓝牙电脑上显示 `ble_adapter=not-found` 是正常的。
+
+| 命令 | 作用 |
+| --- | --- |
+| `r08 self-check` | 打印平台能力；默认不注入 |
+| `r08 scan` | 扫描 `R08_9C07` |
+| `r08 device-info` | 只读 Device Information，不写特征 |
+| `r08 listen` | 打开触控通知并记录动作，**不注入** |
+| `r08 control` | 注入：上下滑→滚轮，双击复制，三击粘贴 |
+| `r08 disable-touch` | 发送官方 `0x3B` 关闭触控 |
+
+快捷脚本：`scripts/start_r08_control.sh` / `.bat`，停止用 `scripts/stop_r08_touch.sh` / `.bat`。控制模式会把日志同时写到 `r08-control-latest.log`。退出请按 Enter；Ctrl+C 也会释放按键并关闭触控。
+
+运行时请完全退出手机官方 App 并关闭手机蓝牙。程序只匹配 `R08_9C07` / `31:31:45:37:9C:07`，普通鼠标不参与映射。控制功能必须显式使用 `control`，`listen` 和调试默认关闭注入。
+
+三平台差异：
+
+- **Windows**：GATT（btleplug）+ Raw Input 相对 Y。戒指把上下滑报成指针位移，程序转成高分辨率滚轮并恢复光标。复制/粘贴为 Ctrl+C / Ctrl+V。
+- **Linux**：GATT（BlueZ）+ evdev grab。grab 后戒指不会推动系统指针。滚轮经 `/dev/uinput` 的 `REL_WHEEL_HI_RES` 注入；用户需要 `input` 组权限。
+- **macOS**：GATT（Core Bluetooth）可用。系统 HID 会占用 BLE 鼠标，因此没有逐点相对 Y 跟踪；上下滑走离散 GATT `0x1D`。复制/粘贴为 Command+C / Command+V，需要辅助功能权限。不要把平滑拆步说成真实触摸跟踪。
+
+自定义 GATT `0x1D` 仍是离散动作：`1` 点击、`2` 下滑、`3` 上滑。没有绝对坐标、压力或接触面积。动作 `4/5`、左右滑和长按默认无操作。程序拒绝写入官方 DFU 特征；当前固件尚未备份。
+
+## R08_9C07 遗留 Windows 连接
+
+如果仍要使用已验证的 C# 控制器：Windows 设置里已经配对 `R08_9C07` 后，双击 `start_native_control.bat`。这个版本通过 Windows 原生 GATT API 打开已配对戒指，不依赖“隐私和安全性 → 其他设备”中的桌面应用列表；该列表为空不影响使用。
 
 运行时请完全退出手机官方 App 并关闭手机蓝牙，避免手机抢占戒指连接。窗口显示 `HID_DEVICE` 和 `CONTROL_READY` 后，切换到要操作的浏览器或编辑器并保持控制程序运行。R08 固件会把上下滑报告成鼠标指针的纵向位移；程序只识别地址为 `313145379C07` 的戒指输入，把这段位移转换成高分辨率滚轮并将鼠标指针恢复到普通鼠标最后停留的位置。双击执行复制，三击执行粘贴；普通鼠标的移动和点击不参与戒指映射。需要停止时回到控制窗口按 Enter。若修改了原生源码，先双击 `build_native_control.bat` 重新编译。
 
 Windows 设备管理器中，R08 会同时显示为“符合蓝牙低能耗 GATT 的 HID 设备”“HID-compliant mouse”和“符合 HID 标准的用户控制设备”。因此触控滑动主要走系统 HID，不一定出现在 `6e400003` 的自定义 BLE 通知中；“其他设备”隐私页面里没有桌面应用属于正常现象。
 
-R08_9C07 的 HID 报告描述符已经通过 Windows HID 驱动实测：鼠标集合输入报告为 7 字节，只包含 1 个按钮、16 位相对 X、16 位相对 Y 和 8 位 Wheel，且没有 Feature Report；消费者集合为 4 字节、24 个离散按键位。设备没有公开触摸绝对坐标、压力、接触面积等额外字段。原生控制程序启动时会把这些 `HID_CAPS` / `HID_INPUT_VALUE` 信息写入日志，便于复核不同固件。
+R08_9C07 的 HID 报告描述符已经通过 Windows HID 驱动实测：鼠标集合输入报告为 7 字节，只包含 1 个按钮、16 位相对 X、16 位相对 Y 和 8 位 Wheel，且没有 Feature Report；消费者集合为 4 字节、24 个离散按键位。设备没有公开触摸绝对坐标、压力、接触面积等额外字段。C# 控制程序启动时会把这些 `HID_CAPS` / `HID_INPUT_VALUE` 信息写入日志，便于复核不同固件。
 
-这是一个面向 Windows 的 BLE 调试工具。它不依赖 Windows“添加蓝牙设备”配对，而是像官方 App 一样直接扫描并连接 BLE GATT 设备。
+Python `smart_ring_detector.py` 仍是一个面向 Windows 的 BLE 调试 GUI。它不依赖 Windows“添加蓝牙设备”配对，而是像官方 App 一样直接扫描并连接 BLE GATT 设备。
 
 ## 使用方法
 

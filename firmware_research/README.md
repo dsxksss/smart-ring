@@ -12,11 +12,17 @@
 
 读取命令：
 
+```bash
+cargo run -p r08 --release -- device-info
+```
+
+Windows 遗留 C# 工具：
+
 ```powershell
 .\native_ble\bin\Release\net10.0\R08NativeCli.exe --device-info
 ```
 
-`--device-info` 使用只读句柄和 `BluetoothGATTGetCharacteristicValue`，不会执行特征写入。
+Rust / C# 的 `--device-info` / `device-info` 都使用只读 GATT 读取，不会执行特征写入。
 
 ## 官方 App 中确认的 OTA 机制
 
