@@ -62,6 +62,11 @@ impl Injector for MacInjector {
         self.post_scroll(delta)
     }
 
+    fn capture_cursor_anchor(&mut self) -> Result<()> {
+        // macOS does not expose the ring's per-report HID stream in this controller.
+        Ok(())
+    }
+
     fn restore_cursor(&mut self) -> Result<()> {
         if let Some(point) = self.anchor {
             if core_graphics::display::CGDisplay::warp_mouse_cursor_position(point).is_err() {

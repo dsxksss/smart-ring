@@ -135,6 +135,7 @@ fn apply_outputs(injector: &mut Box<dyn Injector>, outputs: Vec<Output>) -> Resu
         match output {
             Output::Log(text) => tracing::info!("{text}"),
             Output::Wheel(delta) => injector.wheel(delta)?,
+            Output::CaptureCursorAnchor => injector.capture_cursor_anchor()?,
             Output::RestoreCursor => injector.restore_cursor()?,
             Output::ReleaseLeftButton => injector.release_left_button()?,
             Output::Copy => injector.copy()?,

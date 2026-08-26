@@ -2,6 +2,7 @@ use anyhow::Result;
 
 pub trait Injector: Send {
     fn wheel(&mut self, delta: i32) -> Result<()>;
+    fn capture_cursor_anchor(&mut self) -> Result<()>;
     fn restore_cursor(&mut self) -> Result<()>;
     fn release_left_button(&mut self) -> Result<()>;
     fn copy(&mut self) -> Result<()>;
@@ -13,6 +14,9 @@ pub struct NullInjector;
 
 impl Injector for NullInjector {
     fn wheel(&mut self, _delta: i32) -> Result<()> {
+        Ok(())
+    }
+    fn capture_cursor_anchor(&mut self) -> Result<()> {
         Ok(())
     }
     fn restore_cursor(&mut self) -> Result<()> {
@@ -45,6 +49,9 @@ impl GuardedInjector {
 impl Injector for GuardedInjector {
     fn wheel(&mut self, delta: i32) -> Result<()> {
         self.inner.wheel(delta)
+    }
+    fn capture_cursor_anchor(&mut self) -> Result<()> {
+        self.inner.capture_cursor_anchor()
     }
     fn restore_cursor(&mut self) -> Result<()> {
         self.inner.restore_cursor()
@@ -80,21 +87,21 @@ impl Drop for GuardedInjector {
 pub fn create() -> Result<Box<dyn Injector>> {
     #[cfg(windows)]
     {
-        return Ok(Box::new(GuardedInjector::new(Box::new(
+        Ok(Box::new(GuardedInjector::new(Box::new(
             crate::platform::windows::WindowsInjector::new()?,
-        ))));
+        ))))
     }
     #[cfg(target_os = "linux")]
     {
-        return Ok(Box::new(GuardedInjector::new(Box::new(
+        Ok(Box::new(GuardedInjector::new(Box::new(
             crate::platform::linux::LinuxInjector::new()?,
-        ))));
+        ))))
     }
     #[cfg(target_os = "macos")]
     {
-        return Ok(Box::new(GuardedInjector::new(Box::new(
+        Ok(Box::new(GuardedInjector::new(Box::new(
             crate::platform::macos::MacInjector::new()?,
-        ))));
+        ))))
     }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {

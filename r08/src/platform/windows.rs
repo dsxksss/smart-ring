@@ -285,6 +285,13 @@ impl Injector for WindowsInjector {
         Ok(())
     }
 
+    fn capture_cursor_anchor(&mut self) -> Result<()> {
+        unsafe {
+            GetCursorPos(&mut self.anchor)?;
+        }
+        Ok(())
+    }
+
     fn restore_cursor(&mut self) -> Result<()> {
         unsafe {
             SetCursorPos(self.anchor.x, self.anchor.y)?;

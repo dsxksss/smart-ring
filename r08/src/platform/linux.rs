@@ -215,6 +215,11 @@ impl Injector for LinuxInjector {
         self.emit(&events)
     }
 
+    fn capture_cursor_anchor(&mut self) -> Result<()> {
+        // The ring device is grabbed, so its relative motion never reaches the compositor.
+        Ok(())
+    }
+
     fn restore_cursor(&mut self) -> Result<()> {
         // evdev grab already swallows ring pointer motion.
         let _ = self.cursor;

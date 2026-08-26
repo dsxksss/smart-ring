@@ -46,6 +46,7 @@ pub enum InputEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Output {
     Wheel(i32),
+    CaptureCursorAnchor,
     RestoreCursor,
     ReleaseLeftButton,
     Copy,
@@ -193,6 +194,9 @@ impl MappingEngine {
 
     fn handle_hid(&mut self, input: HidMouseEvent, now_ms: u64, out: &mut Vec<Output>) {
         if !input.is_ring {
+            if input.dx != 0 || input.dy != 0 {
+                out.push(Output::CaptureCursorAnchor);
+            }
             return;
         }
         out.push(Output::Log(format!(
@@ -415,20 +419,14 @@ mod tests {
         engine.handle(gatt_action(1), 0);
         engine.handle(gatt_action(1), 200);
         let flushed = engine.tick(200 + R08_TAP_FLUSH_MS);
-        assert!(
-            flushed.iter().any(|item| *item == Output::Copy),
-            "{flushed:?}"
-        );
+        assert!(flushed.contains(&Output::Copy), "{flushed:?}");
 
         let mut engine = inject_engine();
         engine.handle(gatt_action(1), 0);
         engine.handle(gatt_action(1), 400);
         engine.handle(gatt_action(1), 800);
         let flushed = engine.tick(800 + R08_TAP_FLUSH_MS);
-        assert!(
-            flushed.iter().any(|item| *item == Output::Paste),
-            "{flushed:?}"
-        );
+        assert!(flushed.contains(&Output::Paste), "{flushed:?}");
     }
 
     #[test]
@@ -610,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn non_ring_mouse_is_ignored() {
+    fn non_ring_mouse_only_updates_cursor_anchor() {
         let mut engine = inject_engine();
         let out = engine.handle(
             InputEvent::HidMouse(HidMouseEvent {
@@ -622,7 +620,7 @@ mod tests {
             }),
             0,
         );
-        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(out, vec![Output::CaptureCursorAnchor]);
     }
 
     #[test]
