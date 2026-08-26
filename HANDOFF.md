@@ -2,12 +2,13 @@
 
 目标 GitHub 仓库：<https://github.com/dsxksss/smart-ring>
 
-接手的 AI 必须先阅读仓库根目录 `AGENTS.md`。其中集中记录了安全红线、蓝牙互斥、残留进程处理、滚轮数据上限和禁止上传的敏感内容。
+接手的 AI 必须先阅读仓库根目录 `AGENTS.md` 和 `NEXT_AI_HANDOFF.md`。后者是最新、可直接执行的跨电脑接手清单。
 
-本地仓库已经提交到 `main`。如果远程仍为空，在本目录执行：
+当前开发分支为 `cursor/rust-cross-platform-032b`。换电脑后执行：
 
 ```powershell
-git push -u origin main
+git switch cursor/rust-cross-platform-032b
+powershell -ExecutionPolicy Bypass -File .\scripts\restore_research_artifacts.ps1
 ```
 
 ## 目标
@@ -72,15 +73,17 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
 /sdcard/Android/data/com.qcwireless.ring/files/dfu/<version>.bin
 ```
 
-2026-08-26 使用官方 App 正常登录/连接后检查：外部目录中只有设备指南图片，未出现 `dfu` 目录或固件文件。点击“固件升级”后 App 显示短暂提示，没有进入升级确认框，也没有下载缓存；提示被系统通知遮挡，尚未确认是“已是最新版本”还是查询失败。
+2026-08-26 官方接口已确认当前版本返回 `60001 / No upgraded version`。通过只在查询字段中报告较低版本，已经取得精确匹配的官方最新版镜像。
 
 ## 当前硬性结论
 
-**戒指当前固件尚未备份。** 已保存 APK、版本号、协议和日志都不等于备份。没有向戒指发送 DFU Start/Init/Data/Check/End，也没有执行擦除或刷写。
+已归档精确匹配的官方镜像 `RT08_3.10.48_260309.bin`，SHA-256 为 `c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b`。这不是设备整片 Flash 读回，尚未验证独立恢复入口。没有向戒指发送 DFU Start/Init/Data/Check/End，也没有执行擦除或刷写。
 
 官方 DFU 实现没有发现读取整片 Flash 的命令；获得当前镜像只能依赖精确匹配的官方 OTA 包，或者识别芯片和测试点后通过 SWD/JTAG/厂商 Boot ROM 重复读取。
 
 ## 明天优先继续
+
+精确步骤和当前逆向地址见 `NEXT_AI_HANDOFF.md`；以下旧清单只保留背景。
 
 1. 在有戒指的电脑上克隆本仓库，先跑 Rust 测试和 Release 构建：
 
@@ -99,12 +102,10 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
    ```
 
 2. 推荐用 `r08 interactive` 的数字菜单：先选 `1` 确认 GATT 动作，再选 `2` 开启电脑控制；`4` 关闭触控，`0` 安全退出。Linux 需要 `input` 组与 `/dev/uinput`；macOS 需要辅助功能权限，且精细相对 Y 不可用。
-3. 手机安装/登录官方 App，连接戒指，进入“我的 → 固件升级”。只允许服务器检查和下载；**不要确认升级**。
-4. 检查 `/sdcard/Android/data/com.qcwireless.ring/files/dfu/`。如出现 `.bin`，先原样拉取、只读保存两份，并记录来源、长度和 SHA-256。
-5. 如果 App 明确显示“已是最新版本”且不缓存当前包，联系厂商索取 `RT08_V3.1 / RT08_3.10.48_260309` 原厂包，或在授权范围内记录 App 正常会话的 OTA 响应。不要使用硬编码/default token。
-6. 取得镜像后只做离线识别：文件头、熵、字符串、ARM 向量表、装载地址、分区、签名/加密/反回滚。
-7. 拆机或探测测试点前先拍摄高清 PCB 双面照片，确认 MCU/SoC 型号、供电电压和 SWD/JTAG/串口焊盘；不要盲接 5V。
-8. 只有 `firmware_research/README.md` 的全部防变砖门槛满足后，才讨论修改或刷写。
+3. 直接使用 `research_artifacts/firmware/` 中已校验的官方镜像做离线识别，不再重复抓 OTA。
+4. 定位 LIS3DH ODR、读取循环、`A1 01..05` 打包定时器和 `0x1D` 手势生成链。
+5. 拆机或探测测试点前先拍摄高清 PCB 双面照片，确认 MCU/SoC 型号、供电电压和 SWD/JTAG/串口焊盘；不要盲接 5V。
+6. 只有 `firmware_research/README.md` 的全部防变砖门槛满足后，才讨论修改或刷写。
 
 ## 明确禁止
 
@@ -112,8 +113,8 @@ POST https://china.qcwxwire.com/qcwx/app-update/last-ota/china
 - 不用 DFU 写命令做“探测”
 - 不把升级中断当作退出方式
 - 不在唯一一枚戒指上试刷未验证镜像
-- 不上传手机 bugreport、HCI 全量日志、通知截图、配对码、账号 token 或官方 APK
+- 不上传手机 bugreport、HCI 全量日志、通知截图、配对码或账号 token
 
-## 本仓库未包含的本地证据
+## 仓库资料包
 
-为了隐私与版权，GitHub 不包含官方 APK、反编译源码、Android bugreport、HCI 抓包、ADB 工具、个人通知截图和本机日志。需要复核时，应从官方渠道重新下载 App，并在自己的设备上重新抓取。公开的结论和必要哈希写在文档中。
+用户已明确要求把继续研究所需资料带回家。`research_artifacts/` 包含官方固件、APK 分卷、完整反编译目录分卷、脱敏 R08 传感器证据、工具和参考项目；恢复方法及 SHA-256 见其 `README.md`。仓库不包含 ADB 配对码、账号令牌、个人通知、完整手机系统日志或附近无关 BLE 设备数据。

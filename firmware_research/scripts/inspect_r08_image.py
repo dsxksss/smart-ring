@@ -17,6 +17,11 @@ EXPECTED_HARDWARE = "RT08_V3.1"
 EXPECTED_FIRMWARE_PREFIX = "RT08_"
 KNOWN_CONTAINER_MAGIC = bytes.fromhex("e5 c3 bd 81")
 KNOWN_HEADER_SIZE = 0x50
+RF03_APPLICATION_BASE = 0x00824000
+RF03_SOURCE_MARKERS = (
+    b"qc_code\\app_module\\gsensor\\lis3dh_spi.c",
+    b"Error! Please implement your ISR Handler",
+)
 
 
 def shannon_entropy(data: bytes) -> float:
@@ -78,6 +83,36 @@ def inspect_known_container(data: bytes) -> dict[str, Any] | None:
     }
 
 
+def inspect_rf03_application(data: bytes) -> dict[str, Any]:
+    payload = data[KNOWN_HEADER_SIZE:]
+    application_end = RF03_APPLICATION_BASE + len(payload)
+    thumb_entry_pointers: list[int] = []
+    for offset in range(0, len(data) - 3, 4):
+        value = struct.unpack_from("<I", data, offset)[0]
+        if (
+            value & 1
+            and RF03_APPLICATION_BASE <= (value & ~1) < application_end
+        ):
+            thumb_entry_pointers.append(value)
+    source_markers = [
+        marker.decode("ascii") for marker in RF03_SOURCE_MARKERS if marker in data
+    ]
+    candidate = len(thumb_entry_pointers) >= 20 and bool(source_markers)
+    return {
+        "candidate": candidate,
+        "application_base_candidate": RF03_APPLICATION_BASE,
+        "application_end_candidate": application_end,
+        "thumb_entry_pointer_count": len(thumb_entry_pointers),
+        "thumb_entry_pointer_examples": thumb_entry_pointers[:12],
+        "source_markers": source_markers,
+        "standard_vector_table_expected": False if candidate else None,
+        "note": (
+            "BlueX RF03 OTA application images can omit the bootloader and standard "
+            "Cortex-M vector table; mapped Thumb entry pointers provide architecture evidence."
+        ),
+    }
+
+
 def inspect_image(path: Path) -> dict[str, Any]:
     data = path.read_bytes()
     strings = printable_strings(data)
@@ -87,6 +122,7 @@ def inspect_image(path: Path) -> dict[str, Any]:
         EXPECTED_FIRMWARE_PREFIX in value for value in hardware_strings
     )
     container = inspect_known_container(data)
+    rf03_application = inspect_rf03_application(data)
     result: dict[str, Any] = {
         "path": str(path.resolve()),
         "size": len(data),
@@ -98,6 +134,7 @@ def inspect_image(path: Path) -> dict[str, Any]:
         "firmware_string_found": firmware_string_present,
         "known_container": container,
         "arm_vector_candidates": vector_candidates(data),
+        "rf03_application": rf03_application,
     }
     reasons: list[str] = []
     if not exact_hardware:
@@ -108,8 +145,10 @@ def inspect_image(path: Path) -> dict[str, Any]:
         reasons.append("container format is not yet recognized")
     elif not container["lengths_match"] or not container["sum32_matches"]:
         reasons.append("container length or checksum validation failed")
-    if not result["arm_vector_candidates"]:
-        reasons.append("no plausible Cortex-M vector table at common offsets")
+    if not result["arm_vector_candidates"] and not rf03_application["candidate"]:
+        reasons.append(
+            "neither a Cortex-M vector table nor a mapped BlueX RF03 Thumb application was recognized"
+        )
     result["offline_patch_candidate"] = not reasons
     result["rejection_reasons"] = reasons
     result["flash_authorized"] = False

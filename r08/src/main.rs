@@ -6,8 +6,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use r08::ble::{self, has_adapter};
 use r08::identity::RING_NAME;
+use r08::ota::{self, OtaFetchOptions, OtaRegion};
 use r08::platform;
 use r08::protocol::{parse_hex_payload, reject_if_dfu, NORDIC_UART_WRITE};
+use r08::sensor::{self, SensorRecordOptions};
 use r08::session::{self, SessionOptions};
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -45,6 +47,46 @@ enum Command {
     DeviceInfo {
         #[arg(long, default_value_t = 20)]
         seconds: u64,
+    },
+    /// Record the known A1 03 accelerometer stream to CSV. Never sends DFU.
+    SensorRecord {
+        #[arg(long, default_value_t = 30)]
+        seconds: u64,
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Send only the known A1 02 raw-sensor stop packet. Never sends DFU.
+    SensorStop,
+    /// Query the official QRing OTA service and optionally download an exact matching image. Never sends DFU.
+    OtaFetch {
+        /// Use the global OTA service instead of the default mainland China service.
+        #[arg(long)]
+        global: bool,
+        /// Only print matching metadata; do not download the firmware file.
+        #[arg(long)]
+        metadata_only: bool,
+        /// Skip the device-information confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Use an existing token instead of the default QRing guest token.
+        #[arg(long)]
+        token_auth: bool,
+        /// Log in with a QRing account instead of the default QRing guest token.
+        #[arg(long)]
+        account_auth: bool,
+        #[arg(long, default_value = ota::DEFAULT_HARDWARE_VERSION)]
+        hardware_version: String,
+        #[arg(long, default_value = ota::DEFAULT_ROM_VERSION)]
+        rom_version: String,
+        /// Advanced: report an older installed version to retrieve the latest package; the result must still match --rom-version.
+        #[arg(long)]
+        query_rom_version: Option<String>,
+        #[arg(long, default_value = ota::DEFAULT_MAC)]
+        mac: String,
+        #[arg(long, default_value = "CN")]
+        country: String,
+        #[arg(long, default_value = "firmware_research/evidence/ota")]
+        output_dir: std::path::PathBuf,
     },
     /// Enable touch notifications and log packets. Does not inject.
     Listen {
@@ -128,6 +170,66 @@ async fn main() -> Result<()> {
             }
             connection.disconnect().await?;
             Ok(())
+        }
+        Command::SensorRecord { seconds, output } => {
+            println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
+            println!("此测试会发送已知的 A1 04 04 原始传感器命令，LED 可能闪烁；不会发送 DFU。");
+            let connection = ble::connect_fresh(30).await?;
+            let result = sensor::record(&connection, SensorRecordOptions { seconds, output }).await;
+            let disconnect_result = connection.disconnect().await;
+            match result {
+                Ok(summary) => {
+                    disconnect_result?;
+                    println!("SENSOR_SUMMARY {}", serde_json::to_string(&summary)?);
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = disconnect_result;
+                    Err(error)
+                }
+            }
+        }
+        Command::SensorStop => {
+            println!("正在查找并连接 {RING_NAME}，最多等待 20 秒……");
+            let connection = ble::connect(20).await?;
+            let result = sensor::stop(&connection).await;
+            let disconnect_result = connection.disconnect().await;
+            result?;
+            disconnect_result?;
+            println!("已发送 A1 02，原始传感器模式应已关闭");
+            Ok(())
+        }
+        Command::OtaFetch {
+            global,
+            metadata_only,
+            yes,
+            token_auth,
+            account_auth,
+            hardware_version,
+            rom_version,
+            query_rom_version,
+            mac,
+            country,
+            output_dir,
+        } => {
+            ota::fetch(OtaFetchOptions {
+                region: if global {
+                    OtaRegion::Global
+                } else {
+                    OtaRegion::China
+                },
+                hardware_version,
+                rom_version,
+                query_rom_version,
+                mac,
+                country,
+                output_dir,
+                metadata_only,
+                assume_yes: yes,
+                token_auth,
+                account_auth,
+            })
+            .await
         }
         Command::Listen {
             seconds,
@@ -213,7 +315,8 @@ async fn self_check() -> Result<()> {
     println!("inject_default=double-tap-gated");
     println!("dfu_writes=blocked");
     println!("target_name={RING_NAME}");
-    println!("firmware_backup=not-present");
+    println!("firmware_stock_image=present-local");
+    println!("firmware_recovery_path=not-verified");
     for note in caps.notes {
         println!("note={note}");
     }

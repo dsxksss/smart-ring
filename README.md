@@ -2,6 +2,8 @@
 
 跨平台控制器是 Rust 程序 `r08`，支持 **Windows、Linux、macOS**。旧的 Python GUI 和 C# `R08NativeCli` 仍保留为 Windows 遗留工具，新的开发与 CI 以 Rust 为准。
 
+换电脑继续固件研究，请先阅读 [`NEXT_AI_HANDOFF.md`](NEXT_AI_HANDOFF.md)。可迁移的固件、APK/反编译分卷、脱敏传感器数据和分析工具见 [`research_artifacts/README.md`](research_artifacts/README.md)。
+
 ## 跨平台 Rust 控制器（推荐）
 
 需要 Rust 1.85+（<https://rustup.rs>）。Linux 编译还需要 `libdbus-1-dev` 和 `pkg-config`。
@@ -22,7 +24,7 @@ cargo build -p r08 --release
 
 Windows 请在“以管理员身份运行”的 PowerShell 或命令提示符中执行。也可以双击 `scripts\start_r08_control.bat`，脚本会请求一次 UAC 权限并保留控制窗口。管理员权限只用于临时停用戒指自身的 HID 鼠标子设备，普通鼠标不会被停用。
 
-启动完成后显示 `CONTROL_STANDBY`。此时电脑控制关闭；双击戒指、看到绿光后，程序收到 `02 02` 并显示 `CONTROL_AWAKE`，随后先切换到要操作的软件，1 分钟内上/下滑滚动，再次双击复制，三击粘贴。控制窗口仍在前台时会拦截复制/粘贴，防止模拟的 `Ctrl+C` 结束控制程序。超时后自动回到待机，必须再次双击唤醒。按 Enter 或 `Ctrl+C` 安全退出。`r08 interactive` 数字菜单只保留给协议调试使用，普通使用不需要进入。
+启动完成后显示 `CONTROL_STANDBY`。此时电脑控制关闭；双击戒指、看到绿光后，程序收到 `02 02` 并显示 `CONTROL_AWAKE`，随后 1 分钟内上/下滑滚动，再次双击复制，三击粘贴。执行复制或粘贴时如果控制窗口仍在前台，程序会自动最小化并切回刚才的软件，再发送快捷键，避免模拟的 `Ctrl+C` 结束控制程序。超时后自动回到待机，必须再次双击唤醒。按 Enter 或 `Ctrl+C` 安全退出。`r08 interactive` 数字菜单只保留给协议调试使用，普通使用不需要进入。
 
 | 命令 | 作用 |
 | --- | --- |
@@ -31,6 +33,9 @@ Windows 请在“以管理员身份运行”的 PowerShell 或命令提示符中
 | `r08 self-check` | 打印平台能力；默认不注入 |
 | `r08 scan` | 扫描 `R08_9C07` |
 | `r08 device-info` | 只读 Device Information，不写特征 |
+| `r08 sensor-record` | 临时开启已知的 `A1 03` 三轴通知并保存 CSV；不发送 DFU |
+| `r08 sensor-stop` | 只发送 `A1 02`，用于关闭原始传感器模式和闪烁的 LED |
+| `r08 ota-fetch` | 查询 QRing 官方 OTA，并只下载硬件/固件版本精确匹配的镜像；不连接戒指、不发送 DFU |
 | `r08 listen` | 打开触控通知并记录动作，**不注入** |
 | `r08 disable-touch` | 发送官方 `0x3B` 关闭触控 |
 
@@ -46,7 +51,53 @@ Windows 请在“以管理员身份运行”的 PowerShell 或命令提示符中
 - **Linux**：GATT（BlueZ）+ evdev grab。grab 后戒指不会推动系统指针。滚轮经 `/dev/uinput` 的 `REL_WHEEL_HI_RES` 注入；用户需要 `input` 组权限。
 - **macOS**：GATT（Core Bluetooth）可用。系统 HID 会占用 BLE 鼠标，因此没有逐点相对 Y 跟踪；上下滑走离散 GATT `0x1D`。复制/粘贴为 Command+C / Command+V，需要辅助功能权限。不要把平滑拆步说成真实触摸跟踪。
 
-自定义 GATT `0x1D` 仍是离散动作：`1` 点击、`2` 下滑、`3` 上滑。没有绝对坐标、压力或接触面积。动作 `4/5`、左右滑和长按默认无操作。程序拒绝写入官方 DFU 特征；当前固件尚未备份。
+自定义 GATT `0x1D` 仍是离散动作：`1` 点击、`2` 下滑、`3` 上滑。没有绝对坐标、压力或接触面积。动作 `4/5`、左右滑和长按默认无操作。程序拒绝写入官方 DFU 特征；官方同版本镜像已经保存，但恢复入口仍未验证，因此当前不对刷写做任何承诺。
+
+## 三轴传感器可观测性测试（不刷固件）
+
+先完全退出手机官方 App 并关闭手机蓝牙。下面的命令会发送已知的 `A1 04 04`，记录 `A1 03` 三轴通知 20 秒，然后无论正常结束还是按 `Ctrl+C` 都会尝试发送 `A1 02`。测试期间绿灯可能闪烁、耗电会增加：
+
+```powershell
+.\target\release\r08.exe sensor-record --seconds 20 --output captures\still.csv
+```
+
+建议分别录三段并使用不同文件名：静止、缓慢倾斜、沿手指轴转动。程序结束时会打印采样数、有效频率和各轴范围。也可以离线比较：
+
+```powershell
+python firmware_research\scripts\analyze_sensor_csv.py captures\still.csv captures\tilt.csv captures\rotate.csv
+```
+
+如果采集程序异常退出且 LED 没停，运行：
+
+```powershell
+.\target\release\r08.exe sensor-stop
+```
+
+该流程只使用普通 UART 控制特征，不写 DFU。CSV 使用新文件创建模式，目标文件已经存在时会拒绝覆盖。
+
+## 只读查询官方 OTA
+
+下面的命令只访问 QRing 官方服务器，不连接戒指，也不会发送 DFU。程序先显示即将提交的设备版本和已遮罩 MAC，得到确认后按官方 App 的访客模式申请临时令牌，再查询 OTA。临时令牌只存在于进程内存，不会显示、写入日志或元数据。
+
+```powershell
+.\target\release\r08.exe ota-fetch
+```
+
+默认只接受与 `RT08_V3.1 / RT08_3.10.48_260309` 匹配的返回结果。版本或硬件不匹配、响应缺少身份字段、下载不是 HTTPS、文件超过官方 App 上限、目标文件已存在但哈希不同，都会停止且不覆盖文件。下载结果保存在被 Git 忽略的 `firmware_research/evidence/ota/`，同时生成不含令牌和签名查询参数的元数据与 SHA-256。只想验证服务器是否返回匹配包时使用：
+
+```powershell
+.\target\release\r08.exe ota-fetch --metadata-only
+```
+
+当前版本直接查询会得到官方状态 `60001 / No upgraded version`。若要备份服务器上的当前最新版，可以只在查询字段中报告较旧版本；程序仍以真实的 `--rom-version` 校验返回包，硬件和目标版本不精确匹配就拒绝下载：
+
+```powershell
+.\target\release\r08.exe ota-fetch --query-rom-version RT08_3.10.47_260101
+```
+
+2026-08-26 已通过该流程取得官方 `RT08_3.10.48_260309.bin`，大小 `146812` 字节，SHA-256 `c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b`。查询值只用于触发官方服务器返回最新版，并不声称 `3.10.47_260101` 是已证实存在的历史固件。
+
+如需兼容其他会话，可以用 `ota-fetch --token-auth` 隐式输入现有令牌，或用 `ota-fetch --account-auth` 隐式输入 QRing 邮箱和密码。程序不会从手机或 App 自动提取令牌。即使成功下载，镜像仍然只能进入离线检查流程，不能因此执行刷写。
 
 ## R08_9C07 遗留 Windows 连接（不推荐，会短暂移动光标）
 

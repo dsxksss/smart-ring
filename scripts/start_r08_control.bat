@@ -20,8 +20,7 @@ if not exist "target\release\r08.exe" (
 echo Close the phone ring app and turn off phone Bluetooth first.
 echo Administrator mode protects the pointer by disabling only the R08 mouse child.
 echo Controller is standing by. Double-tap the ring to enable control for one minute.
-echo After CONTROL_AWAKE, switch to the app you want to control.
-echo Copy and paste are ignored while this console is in front, so Ctrl+C cannot close the controller.
+echo When copying or pasting, the controller minimizes itself if this console is still in front.
 echo Press Enter or Ctrl+C to exit safely.
 echo.
 target\release\r08.exe

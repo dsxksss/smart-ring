@@ -103,7 +103,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
         println!(
             "控制待机：请双击戒指唤醒；绿光亮起后，1 分钟内可上下滑滚动、双击复制、三击粘贴。"
         );
-        println!("看到 CONTROL_AWAKE 后，请先切换到要操作的软件；控制窗口在前台时会拦截复制/粘贴快捷键。");
+        println!("看到 CONTROL_AWAKE 后即可操作；执行复制/粘贴时如控制窗口仍在前台，程序会自动最小化并切回目标软件。");
         println!("按 Enter 或 Ctrl+C 安全退出。");
     } else {
         tracing::info!(

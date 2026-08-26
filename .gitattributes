@@ -1,0 +1,5 @@
+research_artifacts/**/*.bin binary
+research_artifacts/**/*.jar binary
+research_artifacts/**/*.whl binary
+research_artifacts/**/*.zip binary
+research_artifacts/**/*.part* binary

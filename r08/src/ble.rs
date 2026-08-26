@@ -73,17 +73,33 @@ pub async fn scan(scan_seconds: u64) -> Result<Vec<(String, String)>> {
 }
 
 pub async fn connect(scan_seconds: u64) -> Result<RingConnection> {
+    connect_with_options(scan_seconds, true).await
+}
+
+/// Connect without reusing the Win32 system GATT handle.
+///
+/// This is useful for high-rate notification sessions because a stale Windows
+/// service interface can enumerate successfully but time out while enabling
+/// the CCCD. WinRT and btleplug establish their own GATT session instead.
+pub async fn connect_fresh(scan_seconds: u64) -> Result<RingConnection> {
+    connect_with_options(scan_seconds, false).await
+}
+
+async fn connect_with_options(scan_seconds: u64, allow_win32: bool) -> Result<RingConnection> {
     #[cfg(windows)]
-    match crate::platform::windows_gatt_win32::WindowsGattWin32Connection::connect_known().await {
-        Ok(connection) => {
-            return Ok(RingConnection {
-                name: RING_NAME.to_string(),
-                address: RING_MAC.to_string(),
-                backend: RingBackend::WindowsWin32(connection),
-            });
-        }
-        Err(error) => {
-            tracing::warn!("Windows Win32 GATT 系统连接复用失败，将尝试 WinRT：{error:#}")
+    if allow_win32 {
+        match crate::platform::windows_gatt_win32::WindowsGattWin32Connection::connect_known().await
+        {
+            Ok(connection) => {
+                return Ok(RingConnection {
+                    name: RING_NAME.to_string(),
+                    address: RING_MAC.to_string(),
+                    backend: RingBackend::WindowsWin32(connection),
+                });
+            }
+            Err(error) => {
+                tracing::warn!("Windows Win32 GATT 系统连接复用失败，将尝试 WinRT：{error:#}")
+            }
         }
     }
 

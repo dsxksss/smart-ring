@@ -1,0 +1,15 @@
+{
+  "sourceEndpoint": "https://china.qcwxwire.com/qcwx/app-update/last-ota/china",
+  "downloadSource": "https://qcwxwatchface.oss-cn-hangzhou.aliyuncs.com/ota/RT08_V3.1/RT08_3.10.48_260309.bin",
+  "requestedHardwareVersion": "RT08_V3.1",
+  "requestedRomVersion": "RT08_3.10.47_260101",
+  "expectedRomVersion": "RT08_3.10.48_260309",
+  "returnedHardwareVersion": "RT08_V3.1",
+  "returnedVersion": "RT08_3.10.48_260309",
+  "fileName": "RT08_3.10.48_260309.bin",
+  "bytes": 146812,
+  "sha256": "c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b",
+  "downloadedAtUnix": 1787734853,
+  "authenticationStored": false,
+  "dfuSent": false
+}

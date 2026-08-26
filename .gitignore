@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 captures/
+/tmp/
 
 # Local logs and recordings (may contain device or desktop activity)
 *.log
@@ -34,3 +35,7 @@ r08/target/
 *.hex
 *.img
 *.fw
+
+# Explicit user-authorized portable research bundle for cross-computer handoff
+!research_artifacts/
+!research_artifacts/**

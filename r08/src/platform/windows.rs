@@ -3,6 +3,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::sync::mpsc::Sender;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use windows::core::PCWSTR;
@@ -22,8 +23,9 @@ use windows::Win32::UI::Input::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetWindowLongPtrW, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    GWLP_USERDATA, MSG, WM_CLOSE, WM_DESTROY, WM_INPUT, WNDCLASSW, WS_EX_NOACTIVATE, WS_POPUP,
+    RegisterClassW, SetWindowLongPtrW, ShowWindowAsync, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
+    CW_USEDEFAULT, GWLP_USERDATA, MSG, SW_MINIMIZE, WM_CLOSE, WM_DESTROY, WM_INPUT, WNDCLASSW,
+    WS_EX_NOACTIVATE, WS_POPUP,
 };
 
 use crate::identity::RING_MAC_COMPACT;
@@ -264,11 +266,21 @@ impl WindowsInjector {
     fn hotkey(&mut self, key: u8) -> Result<()> {
         unsafe {
             if foreground_is_terminal() {
-                tracing::warn!(
-                    "ACTION_IGNORED 控制窗口仍在前台，已拦截快捷键以防程序被 Ctrl+C 关闭；请先切换到要操作的软件"
-                );
-                return Ok(());
+                let terminal = GetForegroundWindow();
+                tracing::info!("CONTROL_TARGET 正在最小化控制窗口并切回目标软件");
+                let _ = ShowWindowAsync(terminal, SW_MINIMIZE);
             }
+        }
+        if foreground_is_terminal() {
+            thread::sleep(Duration::from_millis(180));
+        }
+        if foreground_is_terminal() {
+            tracing::warn!(
+                "ACTION_IGNORED Windows 未能切离控制窗口；为防止程序被 Ctrl+C 关闭，本次快捷键未发送"
+            );
+            return Ok(());
+        }
+        unsafe {
             keybd_event(VK_CONTROL.0 as u8, 0, Default::default(), 0);
             keybd_event(key, 0, Default::default(), 0);
             keybd_event(key, 0, KEYEVENTF_KEYUP, 0);

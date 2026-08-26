@@ -36,7 +36,7 @@ pub enum ProtocolError {
     InvalidScrollDirection,
     #[error("滚动格数必须至少为 1")]
     InvalidScrollNotches,
-    #[error("拒绝写入 DFU 特征；当前固件尚未备份")]
+    #[error("拒绝写入 DFU 特征；本程序不提供固件刷写，且当前恢复路径尚未验证")]
     DfuWriteBlocked,
 }
 
@@ -113,6 +113,10 @@ pub fn raw_sensor_stop_packet() -> [u8; COLMI_PACKET_LEN] {
     build_colmi_packet(&[0xA1, 0x02]).expect("raw stop")
 }
 
+pub fn raw_sensor_start_packet() -> [u8; COLMI_PACKET_LEN] {
+    build_colmi_packet(&[0xA1, 0x04, 0x04]).expect("raw start")
+}
+
 pub fn is_dfu_uuid(uuid: uuid::Uuid) -> bool {
     uuid == DFU_SERVICE || uuid == DFU_NOTIFY || uuid == DFU_WRITE
 }
@@ -146,6 +150,24 @@ fn int12(value: u16) -> i16 {
     } else {
         value as i16
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccelerometerSample {
+    pub x: i16,
+    pub y: i16,
+    pub z: i16,
+}
+
+pub fn decode_accelerometer_packet(data: &[u8]) -> Option<AccelerometerSample> {
+    if data.len() != COLMI_PACKET_LEN || !checksum_ok(data) || data[..2] != [0xA1, 0x03] {
+        return None;
+    }
+    Some(AccelerometerSample {
+        y: int12(u16::from(data[2]) << 4 | u16::from(data[3] & 0x0F)),
+        z: int12(u16::from(data[4]) << 4 | u16::from(data[5] & 0x0F)),
+        x: int12(u16::from(data[6]) << 4 | u16::from(data[7] & 0x0F)),
+    })
 }
 
 pub fn describe_colmi_packet(data: &[u8]) -> String {
@@ -201,10 +223,11 @@ pub fn describe_colmi_packet(data: &[u8]) -> String {
             0x01 => "光学/血氧原始数据".to_string(),
             0x02 => "心率 PPG 原始数据".to_string(),
             0x03 => {
-                let raw_y = int12(u16::from(data[2]) << 4 | u16::from(data[3] & 0x0F));
-                let raw_z = int12(u16::from(data[4]) << 4 | u16::from(data[5] & 0x0F));
-                let raw_x = int12(u16::from(data[6]) << 4 | u16::from(data[7] & 0x0F));
-                format!("三轴加速度原始数据 X={raw_x} Y={raw_y} Z={raw_z}")
+                let sample = decode_accelerometer_packet(data).expect("validated A1 03 packet");
+                format!(
+                    "三轴加速度原始数据 X={} Y={} Z={}",
+                    sample.x, sample.y, sample.z
+                )
             }
             channel => format!("传感器原始数据通道 0x{channel:02X}"),
         },
@@ -287,6 +310,22 @@ mod tests {
     }
 
     #[test]
+    fn builds_known_raw_sensor_packets() {
+        assert_eq!(
+            format_packet(&raw_sensor_start_packet())
+                .replace(' ', "")
+                .to_ascii_lowercase(),
+            "a10404000000000000000000000000a9"
+        );
+        assert_eq!(
+            format_packet(&raw_sensor_stop_packet())
+                .replace(' ', "")
+                .to_ascii_lowercase(),
+            "a10200000000000000000000000000a3"
+        );
+    }
+
+    #[test]
     fn describes_unsupported_command_response() {
         let packet = parse_hex_payload("aaee0000000000000000000000000098").unwrap();
         assert!(describe_colmi_packet(&packet).contains("未识别或不受支持"));
@@ -339,10 +378,27 @@ mod tests {
     #[test]
     fn decodes_accelerometer_packet() {
         let packet = parse_hex_payload("a1031fe4fe88010c000000000000003a").unwrap();
+        assert_eq!(
+            decode_accelerometer_packet(&packet),
+            Some(AccelerometerSample {
+                x: 28,
+                y: 500,
+                z: -24,
+            })
+        );
         let description = describe_colmi_packet(&packet);
         assert!(description.contains("X=28"), "{description}");
         assert!(description.contains("Y=500"), "{description}");
         assert!(description.contains("Z=-24"), "{description}");
+    }
+
+    #[test]
+    fn rejects_bad_or_non_accelerometer_packets() {
+        let mut packet = raw_sensor_start_packet();
+        assert_eq!(decode_accelerometer_packet(&packet), None);
+        packet[0] = 0xA1;
+        packet[1] = 0x03;
+        assert_eq!(decode_accelerometer_packet(&packet), None);
     }
 
     #[test]

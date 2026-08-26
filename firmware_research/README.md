@@ -47,9 +47,32 @@ Rust / C# 的 `--device-info` / `device-info` 都使用只读 GATT 读取，不�
 
 APK 本身不内置固件 `.bin`。
 
-2026-08-26 使用空 token 查询上述中国区官方接口，服务器返回 `retCode=401` 和 `Not logged in yet or token has expired`。请求格式和服务器入口可达，但必须使用官方 App 的正常登录会话。不会使用从 APK 中提取的默认 token 绕过认证。原始记录见 `ota_query_20260826.json`。
+2026-08-26 使用空 token 查询上述中国区官方接口，服务器返回 `retCode=401` 和 `Not logged in yet or token has expired`。随后从当前 QRing APK 还原并实测了官方访客流程：`GET token/getToken?key=qcwx_android` 返回 `retCode=0` 和临时令牌。程序可以自行申请访客令牌，无需账号，也不提取手机私有数据；令牌不显示、不落盘。空 token 的原始记录见 `ota_query_20260826.json`。
 
-同日通过 ADB 控制官方 App 的正常界面进行了只读检查：戒指已连接，App 显示固件 `3.10.48`；`files/dfu/` 尚不存在。点击“固件升级”会执行服务器检查，但没有显示升级确认框，也没有产生 `.bin` 缓存。由于系统顶部通知遮挡了短暂提示，仍需确认 App 返回的是“已是最新版本”还是查询失败。整个过程中没有点击升级确认，也没有向戒指发送 DFU 数据。
+同日通过 ADB 控制官方 App 的正常界面进行了只读检查：戒指已连接，App 显示固件 `3.10.48`；`files/dfu/` 尚不存在。访客令牌查询当前版本后，OTA 接口返回 `retCode=60001 / No upgraded version`，确认 App 的提示确实表示最新版，不是认证失败。
+
+随后只在 OTA 查询字段中报告较低版本 `RT08_3.10.47_260101`，服务器返回精确目标 `RT08_V3.1 / RT08_3.10.48_260309`。程序以真实目标版本再次校验后下载原厂包，不连接戒指、不发送 DFU：
+
+- 文件：`firmware_research/evidence/ota/RT08_3.10.48_260309.bin`
+- 大小：`146812` 字节
+- SHA-256：`c205290a7fcbc816b6be8d40f3e74d533551e0e7f2ebed9090a5d3b1c5ab613b`
+- 容器：`0x50` 字节头，两个 payload 长度均为 `146732`，sum32 `13582245` 校验一致
+- 架构证据：BlueX RF03 应用基址候选 `0x00824000`，189 个映射范围内的奇数 Thumb 入口指针，包含 RF03/QC 的 gsensor 与 ISR 源路径标记
+- 访客令牌未显示、未写入文件；元数据记录 `authenticationStored=false`、`dfuSent=false`
+
+工作区原件与系统临时目录研究副本的 SHA-256 一致；它们仍在同一台电脑上，不能算两个独立存储介质。
+
+## 触控强度字段错位与离线实验候选
+
+对 QRing APK 的 `TouchControlReq`、`RingGestureActivity` 与原厂镜像命令 `0x3B` 处理链进行逐字节对照后，确认 App 把手势强度放在数据包偏移 `4`，而固件原本把强度硬编码为 `1` 并读取偏移 `5`。这会使 App 的 `1..10` 强度选择无法按预期进入固件配置。
+
+已生成一个只修复该字段错位的离线实验镜像：
+
+- 文件：`firmware_research/evidence/ota/RT08_3.10.48_260309-gesture-strength-experimental.bin`
+- SHA-256：`2a382a1edd756997d22a2d04a8448cf6f8e14f0deba243de44a2cd52207d20a9`
+- 原厂镜像保持不变；实验镜像 `flashAuthorized=false`
+
+完整调用链、补丁字节、验证结果与限制见 `RT08_OFFLINE_ANALYSIS_20260826.md`。该补丁只让已有强度参数生效，不等于实现连续转动滚动。
 
 ## “已备份”的判定
 
@@ -64,7 +87,7 @@ APK 本身不内置固件 `.bin`。
 
 在以下项目全部完成之前，不发送 DFU Start/Init/Data/Check/End，也不进入擦除或升级模式：
 
-- [ ] 已取得与 `RT08_V3.1` 精确匹配的原厂 `.bin`
+- [x] 已取得与 `RT08_V3.1` 精确匹配的原厂 `.bin`
 - [ ] 已记录原厂文件 SHA-256，并做了至少两份独立副本
 - [ ] 已识别 MCU/SoC、镜像架构、装载地址、向量表和分区布局
 - [ ] 已判断固件是否有签名、加密、反回滚或 Secure Boot
@@ -77,9 +100,11 @@ APK 本身不内置固件 `.bin`。
 
 ## 下一步
 
-1. 从手机 `Android/data/com.qcwireless.ring/files/dfu/` 查找已有缓存；
-2. 若无缓存，在用户明确同意向官方 OTA 服务发送设备 MAC 和版本信息后，只读查询元数据并下载精确匹配包；
-3. 对 `.bin` 做熵、字符串、文件头、向量表和 CPU 架构识别；
-4. 仅在镜像和恢复路径明确后，才讨论修改与刷写。
+2026-08-26 已完成唯一戒指的无刷机三轴实测：`A1 04 04` 会按约 0.994 Hz 同步输出 `A1 01..05`，其中 `A1 03` 的 X/Z 对转动有明显变化，但频率不足以连续跟手。完整证据和后续定位路径见 `R08_SENSOR_OBSERVABILITY_20260826.md`。
 
-更完整的跨电脑交接顺序见仓库根目录 `HANDOFF.md`。
+1. 继续定位 `0x1D` 离散手势的生成与 BLE 发送链，区分触控芯片事件和加速度算法事件；
+2. 定位 LIS3DH 的 ODR 配置、读取循环和 `A1 01..05` 约 1 秒打包定时器，设计 50 Hz 内部采样候选补丁；
+3. 识别 RF03 分区、签名策略、Boot ROM/SWD/JTAG 测试点和独立恢复路径；
+4. 用户确定只使用当前唯一的一枚戒指，因此在独立恢复路径得到验证前只做离线候选镜像，不刷写实验固件。
+
+更完整的跨电脑交接顺序见仓库根目录 `NEXT_AI_HANDOFF.md`；可迁移的二进制资料、工具、分卷恢复方式和校验值见 `research_artifacts/README.md`。
