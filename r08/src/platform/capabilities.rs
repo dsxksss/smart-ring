@@ -11,7 +11,7 @@ pub fn detect() -> PlatformCapabilities {
             "完全退出手机官方 App 并关闭手机蓝牙".to_string(),
             "无光标模式需要管理员权限，仅临时停用 R08 的 HID 鼠标子设备".to_string(),
             "Windows 设置里蓝牙显示未连接不代表 GATT/HID 不可用".to_string(),
-            "控制模式默认关闭；需要注入时使用 r08 control".to_string(),
+            "默认启动即进入控制；只监听使用 r08 listen".to_string(),
         ],
     }
 }
@@ -22,7 +22,7 @@ pub fn detect() -> PlatformCapabilities {
         "需要 BlueZ 与可用的 BLE 适配器".to_string(),
         "HID 抓取需要 input 组权限；滚轮注入需要 /dev/uinput".to_string(),
         "对戒指 evdev 设备执行 grab，避免指针漂移".to_string(),
-        "控制模式默认关闭；需要注入时使用 r08 control".to_string(),
+        "默认启动即进入控制；只监听使用 r08 listen".to_string(),
     ];
     if !std::path::Path::new("/dev/uinput").exists() {
         notes.push("/dev/uinput 不存在，连续滚轮注入不可用".to_string());
@@ -56,7 +56,7 @@ pub fn detect() -> PlatformCapabilities {
             "系统 HID 会吃掉鼠标报告，因此精细相对 Y 跟踪受限；上下滑以 GATT 离散动作为主"
                 .to_string(),
             "这不是逐点触摸跟踪".to_string(),
-            "控制模式默认关闭；需要注入时使用 r08 control".to_string(),
+            "默认启动即进入控制；只监听使用 r08 listen".to_string(),
         ],
     }
 }

@@ -30,7 +30,10 @@ impl RingMouseDeviceGuard {
             .context("没有找到 R08_9C07 的 HID 鼠标子设备；为避免光标移动，已拒绝开启触控")?;
         let devinst = locate_devnode(&instance_id)?;
         if !devnode_started(devinst)? {
-            tracing::info!("R08_POINTER_BLOCK HID 鼠标子设备已经停用，不会移动光标");
+            self.disabled_by_us = Some(instance_id);
+            tracing::warn!(
+                "R08_POINTER_BLOCK 检测到戒指 HID 鼠标子设备已停用；本次保持无光标模式，并在安全退出时恢复"
+            );
             return Ok(());
         }
 

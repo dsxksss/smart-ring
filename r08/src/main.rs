@@ -24,7 +24,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the numeric interactive menu. This is the default when no command is supplied.
+    /// Open the advanced numeric diagnostic menu.
     #[command(alias = "shell")]
     Interactive {
         #[arg(long, default_value_t = 2)]
@@ -76,11 +76,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let command = cli.command.unwrap_or(Command::Interactive {
-        touch_type: 2,
-        sleep_minutes: 1,
-        scroll_gain: 4,
-    });
+    let command = cli.command.unwrap_or_else(default_command);
     let logging = matches!(
         &command,
         Command::Control { .. } | Command::Interactive { .. }
@@ -103,6 +99,7 @@ async fn main() -> Result<()> {
                     sleep_minutes,
                     scroll_gain,
                     seconds: 0,
+                    interactive_menu: true,
                 },
             )
             .await
@@ -147,6 +144,7 @@ async fn main() -> Result<()> {
                     sleep_minutes,
                     scroll_gain: 4,
                     seconds,
+                    interactive_menu: false,
                 },
             )
             .await
@@ -168,6 +166,7 @@ async fn main() -> Result<()> {
                     sleep_minutes,
                     scroll_gain,
                     seconds,
+                    interactive_menu: false,
                 },
             )
             .await
@@ -185,6 +184,15 @@ async fn main() -> Result<()> {
     }
 }
 
+fn default_command() -> Command {
+    Command::Control {
+        seconds: 0,
+        touch_type: 2,
+        sleep_minutes: 1,
+        scroll_gain: 4,
+    }
+}
+
 async fn self_check() -> Result<()> {
     let caps = platform::capabilities();
     println!("os={}", caps.os);
@@ -199,7 +207,7 @@ async fn self_check() -> Result<()> {
             "not-found"
         }
     );
-    println!("inject_default=off");
+    println!("inject_default=on");
     println!("dfu_writes=blocked");
     println!("target_name={RING_NAME}");
     println!("firmware_backup=not-present");
@@ -266,5 +274,28 @@ impl<'a> MakeWriter<'a> for TeeWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_command, Command};
+
+    #[test]
+    fn default_command_starts_double_tap_wake_control() {
+        match default_command() {
+            Command::Control {
+                seconds,
+                touch_type,
+                sleep_minutes,
+                scroll_gain,
+            } => {
+                assert_eq!(seconds, 0);
+                assert_eq!(touch_type, 2);
+                assert_eq!(sleep_minutes, 1);
+                assert_eq!(scroll_gain, 4);
+            }
+            _ => panic!("default command must start control directly"),
+        }
     }
 }

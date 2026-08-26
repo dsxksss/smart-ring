@@ -31,6 +31,7 @@ pub struct SessionOptions {
     pub sleep_minutes: u8,
     pub scroll_gain: i32,
     pub seconds: u64,
+    pub interactive_menu: bool,
 }
 
 pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<()> {
@@ -58,40 +59,73 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
 
     let (hid_tx, hid_rx) = mpsc::channel();
     let _hid = spawn_hid_monitor(hid_tx).context("启动 HID 监听失败")?;
-    tracing::info!(
-        "MENU_READY 已连接 {} {}；输入数字选择功能",
-        connection.name,
-        connection.address
-    );
-    print_menu(touch_enabled, inject_enabled, &options);
+    if options.interactive_menu {
+        tracing::info!(
+            "MENU_READY 已连接 {} {}；输入数字选择功能",
+            connection.name,
+            connection.address
+        );
+        print_menu(touch_enabled, inject_enabled, &options);
+    } else if inject_enabled {
+        tracing::info!(
+            "CONTROL_READY 已连接 {} {}；上下滑=滚轮，唤醒后双击=复制，三击=粘贴",
+            connection.name,
+            connection.address
+        );
+        println!("控制已开启：戒指休眠时双击唤醒；唤醒后上下滑滚动、双击复制、三击粘贴。");
+        println!("按 Enter 或 Ctrl+C 安全退出。");
+    } else {
+        tracing::info!(
+            "LISTEN_READY 已连接 {} {}；戒指休眠时双击唤醒，仅记录动作",
+            connection.name,
+            connection.address
+        );
+        println!("监听已开启：戒指休眠时双击唤醒；按 Enter 或 Ctrl+C 安全退出。");
+    }
 
     let (command_tx, mut command_rx) = tokio_mpsc::channel::<MenuCommand>(8);
-    tokio::spawn(async move {
-        let mut stdin = BufReader::new(tokio::io::stdin());
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match stdin.read_line(&mut line).await {
-                Ok(0) => {
-                    let _ = command_tx.send(MenuCommand::Quit).await;
-                    break;
-                }
-                Ok(_) => {
-                    let command = parse_menu_command(&line);
-                    let quit = command == MenuCommand::Quit;
-                    if command_tx.send(command).await.is_err() || quit {
+    if options.interactive_menu {
+        tokio::spawn(async move {
+            let mut stdin = BufReader::new(tokio::io::stdin());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stdin.read_line(&mut line).await {
+                    Ok(0) => {
+                        let _ = command_tx.send(MenuCommand::Quit).await;
+                        break;
+                    }
+                    Ok(_) => {
+                        let command = parse_menu_command(&line);
+                        let quit = command == MenuCommand::Quit;
+                        if command_tx.send(command).await.is_err() || quit {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = command_tx
+                            .send(MenuCommand::Invalid(format!("读取命令失败：{error}")))
+                            .await;
                         break;
                     }
                 }
+            }
+        });
+    } else {
+        tokio::spawn(async move {
+            let mut stdin = BufReader::new(tokio::io::stdin());
+            let mut line = String::new();
+            match stdin.read_line(&mut line).await {
+                Ok(0) => std::future::pending::<()>().await,
+                Ok(_) => {
+                    let _ = command_tx.send(MenuCommand::Quit).await;
+                }
                 Err(error) => {
-                    let _ = command_tx
-                        .send(MenuCommand::Invalid(format!("读取命令失败：{error}")))
-                        .await;
-                    break;
+                    tracing::warn!("读取退出命令失败：{error}");
                 }
             }
-        }
-    });
+        });
+    }
 
     let started = Instant::now();
     let limit = (options.seconds > 0).then(|| Duration::from_secs(options.seconds));
