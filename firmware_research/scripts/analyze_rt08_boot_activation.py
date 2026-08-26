@@ -40,6 +40,11 @@ ANCHORS = (
         "05 21 41 70 00 21 2f 48 f7 f7 ce fe",
     ),
     (
+        "activation_preserves_second_argument_as_optional_offset",
+        0x00826F2A,
+        "fe b5 0f 46 00 25 62 49 2e 46 88 42 06 d1",
+    ),
+    (
         "activation_special_id_or_rom_lookup",
         0x00826F38,
         "05 20 e1 f7 bd d8 01 21 09 06 08 43 01 e0 e1 f7 25 de",
@@ -117,15 +122,32 @@ def analyze(data: bytes) -> dict[str, Any]:
         "stored_sha256_all_zero": not any(stored_sha256),
         "raw_version_format_bytes": raw_version.hex(" "),
         "raw_version_semantics_proven": False,
+        "downloaded_payload_type": "single_rtl8762e_application_image",
+        "separate_ota_bank_header_present_in_downloaded_payload": False,
+        "packaged_application_flags": {
+            "not_ready": bool(ctrl_flags & (1 << 7)),
+            "not_obsolete": bool(ctrl_flags & (1 << 8)),
+        },
+        "installed_application_flags_read_from_device": False,
         "ota_end_reaches_activation_wrapper": True,
         "activation_arguments": {
             "image_id": f"0x{image_id:04X}",
             "second_argument": 0,
         },
         "application_git_version_passed_as_activation_argument": False,
+        "activation_address_dataflow": {
+            "image_id_resolver_call": "0x00008B94",
+            "resolver_result_saved_in": "r4",
+            "second_argument_saved_in": "r7",
+            "second_argument_conditionally_added_to_resolved_address": True,
+            "resolved_address_validation_call": "0x00008A5C",
+            "commit_wrapper": "0x00826F16",
+            "validation_success_required_before_commit": True,
+        },
         "rom_calls_observed": ["0x00008B94", "0x00008B7A", "0x00008A5C", "0x0003ED1A"],
         "rom_api_names_proven": False,
         "ota_bank_header_update_proven": False,
+        "application_flag_transition_proven": False,
         "equal_version_bank_selection_proven": False,
         "runtime_crash_rollback_proven": False,
         "power_loss_recovery_proven": False,
@@ -133,7 +155,8 @@ def analyze(data: bytes) -> dict[str, Any]:
         "safety_note": (
             "The stock OTA End handler reaches the checked activation chain, but "
             "the exact ROM API semantics and OTA-bank-header update/selection, "
-            "runtime-crash rollback, and independent recovery path remain unproven."
+            "installed application flag transitions, runtime-crash rollback, and "
+            "independent recovery path remain unproven."
         ),
         "anchors": checked,
     }

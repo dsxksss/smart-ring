@@ -20,17 +20,33 @@ class BootActivationTests(unittest.TestCase):
         self.assertFalse(report["integrity_check_en_in_boot"])
         self.assertTrue(report["stored_sha256_all_zero"])
         self.assertEqual(
+            report["downloaded_payload_type"],
+            "single_rtl8762e_application_image",
+        )
+        self.assertFalse(report["separate_ota_bank_header_present_in_downloaded_payload"])
+        self.assertEqual(
+            report["packaged_application_flags"],
+            {"not_ready": True, "not_obsolete": True},
+        )
+        self.assertFalse(report["installed_application_flags_read_from_device"])
+        self.assertEqual(
             report["activation_arguments"],
             {"image_id": "0x2793", "second_argument": 0},
         )
         self.assertFalse(report["application_git_version_passed_as_activation_argument"])
+        self.assertTrue(
+            report["activation_address_dataflow"][
+                "validation_success_required_before_commit"
+            ]
+        )
         self.assertFalse(report["rom_api_names_proven"])
         self.assertFalse(report["ota_bank_header_update_proven"])
+        self.assertFalse(report["application_flag_transition_proven"])
         self.assertFalse(report["equal_version_bank_selection_proven"])
         self.assertFalse(report["runtime_crash_rollback_proven"])
         self.assertFalse(report["power_loss_recovery_proven"])
         self.assertFalse(report["flash_authorized"])
-        self.assertEqual(len(report["anchors"]), 6)
+        self.assertEqual(len(report["anchors"]), 7)
 
     def test_tampered_stock_is_rejected_before_semantic_claims(self):
         data = bytearray(load_image(STOCK))

@@ -74,7 +74,9 @@ address     = 0x00826000 + (file_offset - 0x50)
 
 目标系列 RTL8762E SDK User Guide 的启动图先执行 `Check OTA Headers`，两个 Header 都有效时才进入双 bank 流程；下载章节又把 `OTA Header File` 明确定义为独立于 App Image、用于描述 Flash bank 布局的镜像。双 bank 流程先检查版本更高的 OTA bank，认证/解密失败才检查另一 bank。官方相邻系列 RTL8762C OTA 手册进一步给出每个 bank 独立 4 KiB OTA Header 的字段示例。由此已能确定应用镜像头与 OTA Bank Header 不是同一对象，但仍不能从公开手册确定 R08 ROM 如何比较 Header/应用版本，也没有证明“头部结构有效但进入应用后崩溃”会自动回滚。
 
-`scripts/analyze_rt08_boot_activation.py` 已把原厂 OTA End 与应用内激活链固定为 6 组精确字节锚点：OTA End 以参数 `(image_id=0x2793, second_argument=0)` 调用 `0x00826F2A`，后者可到达 ROM `0x00008B94`、`0x00008B7A`、`0x00008A5C`，成功分支再经 `0x00826F16` 调用 ROM `0x0003ED1A`。报告同时锁定 control flags `0x0981`、零 SHA 字段及头偏移 `0x60` 的原始 8 字节版本结构 `41 10 00 00 9e a3 01 12`；这些 `git_ver` 字节并未直接作为激活参数传入。尚无授权 SDK 符号能可靠命名这些 ROM API，也未证明 ROM 如何更新或选择独立 OTA Bank Header；分析器因此固定输出 OTA Bank Header 更新、bank 选择、运行时回滚、掉电恢复和刷写授权均为 `false`。
+`scripts/analyze_rt08_boot_activation.py` 已把原厂 OTA End 与应用内激活链固定为 7 组精确字节锚点：OTA End 以参数 `(image_id=0x2793, second_argument=0)` 调用 `0x00826F2A`，后者可到达 ROM `0x00008B94`、`0x00008B7A`、`0x00008A5C`，成功分支再经 `0x00826F16` 调用 ROM `0x0003ED1A`。报告同时锁定 control flags `0x0981`、零 SHA 字段及头偏移 `0x60` 的原始 8 字节版本结构 `41 10 00 00 9e a3 01 12`；这些 `git_ver` 字节并未直接作为激活参数传入。尚无授权 SDK 符号能可靠命名这些 ROM API，也未证明 ROM 如何更新或选择独立 OTA Bank Header；分析器因此固定输出 OTA Bank Header 更新、bank 选择、运行时回滚、掉电恢复和刷写授权均为 `false`。
+
+进一步的数据流锚点确认：下载包 payload 只有一个 `image_id=0x2793` 的 RTL8762E 应用镜像，没有附带独立 OTA Bank Header；应用包内 `not_ready/not_obsolete` 两位均为 `1`。激活函数把第二参数保存在 `r7`，由 ROM `0x8B94` 的返回值形成候选地址，经过 `0x8B7A` 条件性地址调整和 `0x8A5C` 验证，只有验证成功才把该地址传给 `0x826F16` 提交包装器。该数据流证明“先解析并验证应用地址、再提交”，但没有设备 Flash 读回就不知道安装后的状态位是否被清零，也无法证明提交动作修改应用头、OTA Header 或二者。
 
 因此，当前激活阻塞项不再简化表述为“应用 `git_ver` 同版本所以不会切换”，而是：R08 的 ROM 激活 API 参数和 OTA Bank Header 更新/选择语义尚未证明。取得 RTL8762E SDK 中对应 ROM 符号、OTA Header 定义和可复现实验前，不修改应用头那 8 个未知版本字节，也不把候选写入唯一设备。
 

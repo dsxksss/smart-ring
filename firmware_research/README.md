@@ -105,7 +105,7 @@ APK 本身不内置固件 `.bin`。
 2. 已区分 LIS3DH 的两组配置：活动采样窗口的 FIFO stream 路径为 `CTRL_REG1=0x37`（25 Hz），待机 INT1 动作/唤醒检测路径才使用 `0x47`（50 Hz）；已定位最多 32 样本的 FIFO 批读、RAM 环形缓冲、每个 XYZ 前进 6 字节的 16 位生产者计数，以及 `A1 01..05` 约 1 秒打包定时器；
 3. 已确认加速度判定函数 `0x00831A7C` 能调用 `0x0082B408(2)` 生成真机观察到的 `02 02 00 ... 04` 通知，随后以 `3000` 重启 `gsensor_shake_flag_timer_id` 做门控/冷却；该包至少存在一条 IMU/敲击生成路径，不应只标成触控区按钮事件；
 4. 已静态确认原厂 OTA 写入非活动应用槽 `0x0084E000..0x00872000`、容量 `0x24000`、擦除粒度 `0x1000`；`0x00872000` 正好是原厂持久化存储起点，已观察到至少两个 4 KiB 页，另有 10 个应用 Flash 区域描述符延伸到 `0x00880000`（`0x0087A000..0x0087B000` 未分类），因此不能越界扩容；物理 Flash 容量仍需只读 Flash ID 证明；
-5. 已用 `analyze_rt08_boot_activation.py` 锁定 OTA End 到 `0x00826F2A`、再到 ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A` 的 6 组精确指令锚点；OTA End 参数为 `(image_id=0x2793, second_argument=0)`，应用头 `git_ver` 并未直接作为激活参数；尚未证明 ROM API 名称、OTA Bank Header 更新/选择、运行时崩溃回滚或掉电恢复；
+5. 已用 `analyze_rt08_boot_activation.py` 锁定 OTA End 到 `0x00826F2A`、再到 ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A` 的 7 组精确指令锚点；下载 payload 只有应用镜像而没有独立 OTA Bank Header，包内 `not_ready/not_obsolete` 均为 `1`；OTA End 参数为 `(image_id=0x2793, second_argument=0)`，验证成功后才提交候选地址。尚未证明 ROM API 名称、安装后状态位转换、OTA Bank Header 更新/选择、运行时崩溃回滚或掉电恢复；
 6. 用户确定只使用当前唯一的一枚戒指，因此在独立恢复路径得到验证前只做离线候选镜像，不刷写实验固件。
 
 更完整的跨电脑交接顺序见仓库根目录 `NEXT_AI_HANDOFF.md`；可迁移的二进制资料、工具、分卷恢复方式和校验值见 `research_artifacts/README.md`。
