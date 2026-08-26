@@ -27,6 +27,7 @@
 - OTA End 确实以参数 `(image_id=0x2793, second_argument=0)` 进入 `0x00826F2A`。哈希锁定的 RTL8762E SDK v1.5.0 已将其控制流识别为 `dfu_check_checksum`，并精确命名 ROM 调用：`0x8B94 get_temp_ota_bank_addr_by_img_id`、`0x8B7A is_ota_support_bank_switch`、`0x8A5C check_image_chksum`、`0x3ED1A dfu_set_ready`。这证明暂存镜像会先校验再清除 `not_ready`；未证明安装后镜像和掉电恢复。
 - 原厂 `0x00826C22` 是 `dfu_report_target_fw_info`：OTA Header ID 的 `+0x194` 是 `T_OTA_HEADER_FORMAT.ver_val`，应用 ID 的 `+0x60` 是 `T_IMG_HEADER_FORMAT.git_ver.ver_info.version`。R08 原始 8 字节解码为 git version `1.4.1`、commit ID `0x1201A39E`，但它不直接作为激活参数。
 - 应用包固定链接到 `image_base=0x00826000 / exe_base=0x00826400`，接收暂存区却是 `0x0084E000`，且包内没有 Bank1 重定位应用或 OTA Header。官方禁用 bank-switch 源码/参考布局也采用 Bank1 大小为零、OTA TMP 置 ready 后由 bootloader copy 的模型。因此已从“静态一致”提升为 `SINGLE_BANK_COPY_IMAGE_PROVEN_AT_SDK_ARCHITECTURE_AND_R08_APPLICATION_PATH`；R08 实际 Flash Map、bootloader 复制和掉电行为尚未实测，安全模型仍必须假定激活覆盖旧应用、没有运行时回滚。
+- SDK 安全机制手册确认 APP 加密可选、Patch 加密强制；R08 应用头 `enc=0`，所以当前 App 候选不依赖未知 APP AES 密钥。另一方面，RTL8762E 安全等级 1-3 都会关闭 SWD，等级 3 还禁止 eFuse 读取；目标设备安全等级尚未取得只读证据，不能把 SWD 当作已建立的恢复入口。
 
 ## 当前离线实现
 

@@ -50,6 +50,14 @@ EXPECTED_FILES = {
         6752,
         "0908904c8ab804c5c63848d91aabdf9f0c74485974888b929029595cd6525c83",
     ),
+    "doc/EN/RTL8762E_OTA_User_Manual_EN-v1.3.pdf": (
+        1894351,
+        "34bc03506e809d8b1dc1e101fdc8c6b963b53b6a71483b1ed89b2c994da9b131",
+    ),
+    "doc/EN/RTL8762E_Security_Mechanism_User_Guide_EN-v1.1.pdf": (
+        646197,
+        "94061ead8303656de443262c6d16bfa18114bec70b8da0a277d6133914744824",
+    ),
 }
 
 EXPECTED_ROM_SYMBOLS = {
@@ -196,6 +204,21 @@ def verify_sdk_archive(path: Path) -> dict[str, Any]:
             "temporary_ota_size": "0x25000",
             "activation_marks_staged_images_ready_before_reset": True,
             "bootloader_copy_path_documented_by_sdk_control_flow": True,
+        },
+        "manual_evidence": {
+            "ota_manual_sha256": EXPECTED_FILES[
+                "doc/EN/RTL8762E_OTA_User_Manual_EN-v1.3.pdf"
+            ][1],
+            "ota_manual_printed_page_15": (
+                "without bank switching, the boot program moves OTA Temp data "
+                "to the image area designated by OTA Bank0 and restarts"
+            ),
+            "power_loss_atomicity_documented": False,
+            "security_manual_sha256": EXPECTED_FILES[
+                "doc/EN/RTL8762E_Security_Mechanism_User_Guide_EN-v1.1.pdf"
+            ][1],
+            "application_encryption_optional": True,
+            "swd_depends_on_unread_device_security_level": True,
         },
         "target_r08_flash_map_proven": False,
         "installed_r08_header_readback_proven": False,

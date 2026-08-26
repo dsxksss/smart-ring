@@ -11,7 +11,7 @@
 
 PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖文本抽取。
 
-2026-08-27 又取得 RealMCU 提供的 `RTL8762E_SDK_v1.5.0.zip`。本地文件大小为 `123872042` 字节，SHA-256 为 `ef1f47b83d60aeb54edb83a34ecc9d92218965ab18ff02256773441d35f7db52`。SDK 本体和厂商源码不提交公开仓库；`scripts/verify_rtl8762e_sdk_v1_5_0.py` 会直接读取 ZIP、核对 7 个关键成员的大小和 SHA-256，不解压、不执行厂商程序，也不连接设备。
+2026-08-27 又取得 RealMCU 提供的 `RTL8762E_SDK_v1.5.0.zip`。本地文件大小为 `123872042` 字节，SHA-256 为 `ef1f47b83d60aeb54edb83a34ecc9d92218965ab18ff02256773441d35f7db52`。SDK 本体和厂商源码不提交公开仓库；`scripts/verify_rtl8762e_sdk_v1_5_0.py` 会直接读取 ZIP、核对 9 个关键成员的大小和 SHA-256，不执行厂商程序，也不连接设备。
 
 ## SDK v1.5.0 源码与 ROM 符号能证明的事项
 
@@ -21,8 +21,10 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 - R08 的 `0x00826F2A` 与 SDK `dfu_check_checksum(image_id, offset)` 的签名和控制流一致：取得暂存地址，非 bank-switch 时加 offset，调用 `check_image_chksum`，成功后经 `0x00826F16`/`dfu_set_image_ready` 调用 ROM `dfu_set_ready`。因此“校验暂存镜像并清除其 `not_ready` 位”的应用侧激活路径已证明。
 - SDK 的 `dfu_service_handle_active_image` 明确在禁用 bank switch 时遍历暂存镜像并置 ready；`DFU_OPCODE_ACTIVE_IMAGE_RESET` 随后解锁 Flash block protection，注释说明这是为了复位后的 bootloader OTA copy。
 - SDK 自带的禁用 bank-switch 参考布局把 Bank1 大小和 Bank1 App 大小设为零，并单独配置 OTA TMP。这证明 RTL8762E 官方单 bank 设计确实是“暂存、置 ready、复位后复制”，而不是从临时地址直接 XIP。
+- SDK 内 `RTL8762E_OTA_User_Manual_EN-v1.3.pdf` 大小 `1894351` 字节，SHA-256 `34bc03506e809d8b1dc1e101fdc8c6b963b53b6a71483b1ed89b2c994da9b131`。已视觉复核 PDF 第 21-23、31-33 页；印刷页 15 明确写明无 bank switch 时由 boot program 把 OTA Temp 数据搬到 OTA Bank0 指定镜像区，再重启生效。手册没有说明复制中途掉电的原子性或恢复算法。
+- SDK 内 `RTL8762E_Security_Mechanism_User_Guide_EN-v1.1.pdf` 大小 `646197` 字节，SHA-256 `94061ead8303656de443262c6d16bfa18114bec70b8da0a277d6133914744824`。已视觉复核 PDF 第 8-11 页：Patch 加密为强制，APP 加密为可选；安全等级 0 允许 SWD，1-3 均关闭 SWD，等级 3 同时禁止 eFuse 读取。R08 APP 头 `enc=0` 证明目标应用未使用 APP AES，但设备安全等级尚未读取，因此不能假定 SWD 恢复可用。
 
-以上是对目标 SoC 软件架构和 R08 应用内调用链的强证据，但 SDK 的参考 Flash Map 不是 R08 的实际 Flash Map；bootloader 在 R08 上的真实复制范围、掉电断点、失败恢复和安装后头部仍须通过等价非唯一硬件或独立只读恢复链验证。
+以上是对目标 SoC 软件架构和 R08 应用内调用链的强证据，但 SDK 的参考 Flash Map 不是 R08 的实际 Flash Map；bootloader 在 R08 上的真实复制范围、掉电断点、失败恢复、安装后头部和安全等级仍须通过等价非唯一硬件或独立只读恢复链验证。
 
 ## SDK User Guide 能证明的事项
 

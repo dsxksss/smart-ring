@@ -112,7 +112,7 @@ APK 本身不内置固件 `.bin`。
 
 IMU 连续滚动的独立通知协议、12 秒固件硬超时、8 秒主机续期和安全停止条件见 `RT08_IMU_ONLY_STREAM_DESIGN_20260826.md`。已实现 292 字节离线 patch 对象和显式 `imu-stream` 主机命令，但候选仍是 `NON_FLASHABLE`，不是可刷固件授权。
 
-补丁机器码已在 ARMv6-M Thumb 仿真中通过 9 个启动、通知、断连、陈旧数据和停止场景；原厂 `0x0083394E` 消费路径会在启用标志置位后先调用 `0x00832F9C` 排空 LIS3DH FIFO，目标固件也存在 timer callback 内停止同一 timer 的原厂路径。原厂通知包装器的连接检查也已加入精确锚点，补丁每个 tick 直接检查连接，断连时在读取 FIFO 和通知前立即停流。原厂激活函数另通过 5 个 resolver、validator、条件偏移和提交场景的 Thumb 指令级仿真，原厂 image-info 函数通过 7 个 ID 分流、失败和指针检查场景。`verify_rtl8762e_sdk_v1_5_0.py` 又锁定 SDK ZIP 和 7 个关键成员。2026-08-27 完整回归为 54 个 Python 测试、59 个 Rust 库测试和 1 个 Rust 主程序测试，Release 构建成功。当前对象为 292 字节；这些结果不证明真实 RTOS 时序、功耗、bootloader 复制掉电安全、运行时回滚或硬件恢复，详见 `RT08_TIMER_AND_PATCH_EMULATION_20260826.md` 和 `RTL8762E_IMAGE_AND_RECOVERY_20260826.md`。
+补丁机器码已在 ARMv6-M Thumb 仿真中通过 9 个启动、通知、断连、陈旧数据和停止场景；原厂 `0x0083394E` 消费路径会在启用标志置位后先调用 `0x00832F9C` 排空 LIS3DH FIFO，目标固件也存在 timer callback 内停止同一 timer 的原厂路径。原厂通知包装器的连接检查也已加入精确锚点，补丁每个 tick 直接检查连接，断连时在读取 FIFO 和通知前立即停流。原厂激活函数另通过 5 个 resolver、validator、条件偏移和提交场景的 Thumb 指令级仿真，原厂 image-info 函数通过 7 个 ID 分流、失败和指针检查场景。`verify_rtl8762e_sdk_v1_5_0.py` 又锁定 SDK ZIP 和 9 个关键成员（含 OTA、安全机制两份手册）。2026-08-27 完整回归为 54 个 Python 测试、59 个 Rust 库测试和 1 个 Rust 主程序测试，Release 构建成功。当前对象为 292 字节；这些结果不证明真实 RTOS 时序、功耗、bootloader 复制掉电安全、运行时回滚或硬件恢复，详见 `RT08_TIMER_AND_PATCH_EMULATION_20260826.md` 和 `RTL8762E_IMAGE_AND_RECOVERY_20260826.md`。
 
 关键固件地址可用 `scripts/verify_rt08_imu_stream_anchors.py` 对官方镜像做只读复核。Rust 端的 `imu-stream` 子命令会核对精确硬件/固件身份，默认只监听；只有同时显式确认未验证候选并传入 `--inject` 才会注入滚轮。它不会刷写固件，原厂固件也不会响应该候选命令。
 
