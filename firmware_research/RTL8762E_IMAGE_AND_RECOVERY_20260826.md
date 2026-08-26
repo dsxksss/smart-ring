@@ -82,7 +82,9 @@ address     = 0x00826000 + (file_offset - 0x50)
 
 `scripts/emulate_rt08_stock_image_info.py` 进一步直接执行原厂 `0x00826C22..0x00826C99`，函数区域 SHA-256 为 `487c32ef6ce6a80bb30965141ea4fd611ba2ebd3392e35e79262418d0f40ccdf`。7 个场景确认：`image_id=0x2790` 会从 ROM `0x8AE2` 返回对象的 `+0x194` 取第一个输出；`0x2791..0x279A`（含应用 `0x2793`）和特殊 `0xFFFE` 则从 `+0x60` 取值；两个输出指针均为必需参数，resolver 返回零或 image ID 越界会失败。目标 RTL8762E 官方 `T_IMG_HEADER_FORMAT` 把应用头 `+0x60` 精确定义为 `git_ver`；原厂另两处调用同一 resolver 后分别读取对象 `+0` 的 `ic_type` 和 `+4` 的 `image_id`，因此普通应用分支的结构/字段语义已有交叉证据。`0x2790` 专用 `+0x194` 的字段名仍未知，也不能证明它读取的是当前已安装 bank，或哪个上层路径在激活时调用该函数。报告继续把 installed-header readback、bank selection、runtime rollback 和刷写授权固定为 `false`。
 
-因此，当前激活阻塞项不再简化表述为“应用 `git_ver` 同版本所以不会切换”，而是：R08 的 ROM 激活 API 参数和 OTA Bank Header 更新/选择语义尚未证明。取得 RTL8762E SDK 中对应 ROM 符号、OTA Header 定义和可复现实验前，不修改应用头那 8 个未知版本字节，也不把候选写入唯一设备。
+地址布局同时排除了“下载包本身已经是一份可直接从暂存地址 XIP 的 Bank1 应用”：原厂包的 image base candidate 为 `0x00826000`，`exe_base/load_base` 都是 `0x00826400`；接收端却把内容写到 `0x0084E000..0x00872000`，若直接从该处 XIP，对应入口应为 `0x0084E400`。包内没有第二份重定位应用，也没有独立 OTA Header。Realtek 官方 OTA 资料说明真正 bank 切换时 Bank1 应用需按 Bank1 地址另行编译，而不切 bank 的方案会把 OTA TMP 搬回 Bank0。因此目标静态证据分类为 `SINGLE_BANK_COPY_IMAGE_CONSISTENT`，不是已由 ROM 符号或真机读回证明的最终结论；地址重映射仍未证明不存在。但在安全判断上必须假定旧应用可能被覆盖，不能把暂存区称作可回滚的第二应用 bank。
+
+因此，当前激活阻塞项不再简化表述为“应用 `git_ver` 同版本所以不会切换”，而是：R08 的 ROM 激活 API 参数和 OTA Bank Header/拷贝激活语义尚未证明，且现有地址布局更符合不可依赖旧应用回滚的 copy-image 路径。取得 RTL8762E SDK 中对应 ROM 符号、OTA Header 定义和可复现实验前，不修改应用头那 8 个未知版本字节，也不把候选写入唯一设备。
 
 ## 不依赖应用固件的恢复入口
 

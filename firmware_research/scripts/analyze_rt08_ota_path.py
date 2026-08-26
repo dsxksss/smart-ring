@@ -24,6 +24,7 @@ INACTIVE_APP_END = INACTIVE_APP_BASE + MAX_STAGED_IMAGE_SIZE
 ADJACENT_STORAGE_BASE = 0x00872000
 ADJACENT_STORAGE_OBSERVED_SPAN = 0x2000
 APP_IMAGE_ID = 0x2793
+REALTEK_IMAGE_HEADER_SIZE = 0x400
 
 # These anchors cover the destructive receiver path, so every conclusion is
 # tied to the one exact stock image rather than inferred from the phone app.
@@ -129,6 +130,20 @@ def analyze(data: bytes) -> dict[str, Any]:
     if stock_staged_size > max_staged_size:
         raise ValueError("stock image does not fit its own receiver's inactive slot")
 
+    payload = data[QRING_HEADER_SIZE:]
+    exe_base, load_base = struct.unpack_from("<II", payload, 0x1C)
+    image_base_candidate = struct.unpack_from("<I", payload, 0x28)[0]
+    expected_active_exe_base = ACTIVE_APP_BASE + REALTEK_IMAGE_HEADER_SIZE
+    expected_staging_exe_base = INACTIVE_APP_BASE + REALTEK_IMAGE_HEADER_SIZE
+    if image_base_candidate != ACTIVE_APP_BASE:
+        raise ValueError(
+            f"unexpected application base candidate 0x{image_base_candidate:08x}"
+        )
+    if (exe_base, load_base) != (expected_active_exe_base, expected_active_exe_base):
+        raise ValueError(
+            "stock application is not linked to the observed active application base"
+        )
+
     storage_regions: list[dict[str, Any]] = []
     for descriptor_address, expected_base, expected_size in STORAGE_DESCRIPTORS:
         offset = address_to_file_offset(descriptor_address, len(data))
@@ -168,6 +183,19 @@ def analyze(data: bytes) -> dict[str, Any]:
         "qring_wrapper_bytes_skipped": QRING_HEADER_SIZE,
         "erase_granularity": 0x1000,
         "app_image_id": f"0x{image_id:04X}",
+        "packaged_application_addresses": {
+            "image_base_candidate": f"0x{image_base_candidate:08X}",
+            "exe_base": f"0x{exe_base:08X}",
+            "load_base": f"0x{load_base:08X}",
+        },
+        "active_slot_xip_address_compatible": exe_base == expected_active_exe_base,
+        "staging_slot_xip_address_compatible": exe_base == expected_staging_exe_base,
+        "separate_bank1_relocated_application_present": False,
+        "separate_ota_header_present_in_package": False,
+        "ota_layout_assessment": "SINGLE_BANK_COPY_IMAGE_CONSISTENT",
+        "ota_layout_assessment_proven_by_runtime_or_rom_symbols": False,
+        "address_remap_during_bank_switch_proven": False,
+        "old_application_survives_activation_proven": False,
         "whole_file_crc_fields_stored_by_init": True,
         "whole_file_crc_fields_rechecked_in_visible_check_handler": False,
         "per_frame_crc16_is_checked_by_protocol": True,

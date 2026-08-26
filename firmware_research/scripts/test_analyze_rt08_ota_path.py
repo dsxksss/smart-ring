@@ -36,6 +36,27 @@ class OtaPathTests(unittest.TestCase):
         self.assertEqual(len(report["additional_application_storage_descriptors"]), 10)
         self.assertEqual(report["highest_observed_storage_end"], "0x00880000")
         self.assertEqual(report["unclassified_gap"]["base"], "0x0087A000")
+        self.assertEqual(
+            report["packaged_application_addresses"],
+            {
+                "image_base_candidate": "0x00826000",
+                "exe_base": "0x00826400",
+                "load_base": "0x00826400",
+            },
+        )
+        self.assertTrue(report["active_slot_xip_address_compatible"])
+        self.assertFalse(report["staging_slot_xip_address_compatible"])
+        self.assertFalse(report["separate_bank1_relocated_application_present"])
+        self.assertFalse(report["separate_ota_header_present_in_package"])
+        self.assertEqual(
+            report["ota_layout_assessment"],
+            "SINGLE_BANK_COPY_IMAGE_CONSISTENT",
+        )
+        self.assertFalse(
+            report["ota_layout_assessment_proven_by_runtime_or_rom_symbols"]
+        )
+        self.assertFalse(report["address_remap_during_bank_switch_proven"])
+        self.assertFalse(report["old_application_survives_activation_proven"])
         self.assertFalse(report["physical_flash_capacity_proven"])
         self.assertFalse(report["bootloader_rollback_proven"])
         self.assertFalse(report["flash_authorized"])

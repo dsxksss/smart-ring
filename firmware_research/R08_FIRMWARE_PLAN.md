@@ -26,6 +26,7 @@
 - 原厂 OTA 接收端只允许把去掉 QRing 包装的应用写入 `0x0084E000..0x00872000`；末端 `0x00872000` 已由原厂应用作为至少两个 4 KiB 页的持久化存储起点，不能把它当作可扩展代码空间。
 - OTA End 确实以参数 `(image_id=0x2793, second_argument=0)` 进入 `0x00826F2A` 激活链，并经过 ROM `0x8B94/0x8B7A/0x8A5C/0x3ED1A`；应用头 `git_ver` 没有直接作为激活参数。这些地址的官方符号、OTA Bank Header 更新/选择、运行时崩溃回滚和掉电恢复仍未证明。
 - 原厂 `0x00826C22` 的指令级仿真确认 `0x2790` 与 `0x2793` 走不同描述字段：OTA Header ID 使用 resolver 对象 `+0x194`，应用 ID 范围使用 `+0x60`。精确 RTL8762E SDK 结构已把应用 `+0x60` 命名为 `T_IMG_HEADER_FORMAT.git_ver`；OTA Header `+0x194`、设备 bank 状态和激活调用关系仍未证明。
+- 应用包固定链接到 `image_base=0x00826000 / exe_base=0x00826400`，接收暂存区却是 `0x0084E000`，且包内没有 Bank1 重定位应用或 OTA Header。当前分类是 `SINGLE_BANK_COPY_IMAGE_CONSISTENT`；在精确 ROM/SDK 和真机读回证明前，安全模型必须假定激活会覆盖旧应用、没有运行时回滚。
 
 ## 当前离线实现
 

@@ -15,6 +15,7 @@ PDF 已用 Poppler 渲染并对下列相关页做视觉复核；不是只依赖�
 
 - PDF 第 23-24 页（印刷页 15-16）描述 RTL8762E 双 bank 启动：先选择版本更高的 OTA bank，镜像检查/解密失败才检查另一 bank。
 - PDF 第 23 页的启动图先执行 `Check OTA Headers`，在两个 OTA Header 都有效时才进入 `Dual Bank Process`；第 41 页又明确 `OTA Header File` 是独立镜像，用来定义 Flash bank 布局。因此 R08 应用头和 OTA Bank Header 是不同对象。
+- Realtek 官方 OTA 方案说明：真正 bank 切换需要为 Bank1 地址另行编译应用，并连同 OTA Header 及 bank 内所需镜像一起打包；不切 bank 的方案则把 OTA TMP 中通过验证的镜像搬回 Bank0。R08 包只含链接到 `0x00826000/0x00826400` 的应用，却暂存到 `0x0084E000`，因此静态布局只支持 `SINGLE_BANK_COPY_IMAGE_CONSISTENT` 结论，不能假设旧应用仍保留可回滚。
 - PDF 的 `T_IMG_HEADER_FORMAT` 精确定义 `git_ver` 位于应用镜像头偏移 `0x60`。这与 R08 原厂函数对普通 image ID 从 ROM resolver 对象 `+0x60` 取值、以及相同对象 `+0/+4` 分别对应 `ic_type/image_id` 的访问一致；因此应用分支可命名为 `git_ver`，但 OTA Header ID `0x2790` 专用的 `+0x194` 字段仍未由目标系列公开结构命名。
 - 该流程图只覆盖启动时镜像检查和解密。它没有说明两个 bank 版本完全相同时选哪一个，也没有说明结构有效但应用运行后 HardFault 是否回滚。
 - PDF 第 42-43 页（印刷页 34-35）给出 1024 字节应用头结构：`not_ready`、`not_obsolete`、`integrity_check_en_in_boot` 位，以及 `T_VERSION_FORMAT git_ver`、RSA 公钥、SHA-256 和保留区的顺序。
