@@ -19,7 +19,7 @@ if not exist "target\release\r08.exe" (
 
 echo Close the phone ring app and turn off phone Bluetooth first.
 echo Administrator mode protects the pointer by disabling only the R08 mouse child.
-echo Control starts automatically. Double-tap the sleeping ring to wake it.
+echo Controller is standing by. Double-tap the ring to enable control for one minute.
 echo Press Enter or Ctrl+C to exit safely.
 echo.
 target\release\r08.exe

@@ -168,7 +168,7 @@ pub fn describe_colmi_packet(data: &[u8]) -> String {
             }
         }
         0xAA if data[1] == 0xEE => "设备返回 AA EE（上一条命令未识别或不受支持）".to_string(),
-        0x02 if data[1] == 0x02 => "R08 相机/长按事件（动作=拍照）".to_string(),
+        0x02 if data[1] == 0x02 => "R08 双击/相机兼容事件".to_string(),
         0x1D => {
             let label = match data[1] {
                 1 => "点击/播放暂停",
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn describes_observed_remote_event() {
         let packet = parse_hex_payload("02020000000000000000000000000004").unwrap();
-        assert!(describe_colmi_packet(&packet).contains("R08 相机/长按事件"));
+        assert!(describe_colmi_packet(&packet).contains("R08 双击/相机兼容事件"));
     }
 
     #[test]

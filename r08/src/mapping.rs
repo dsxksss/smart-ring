@@ -3,7 +3,7 @@
 //! Confirmed hardware limits:
 //! - Custom GATT `0x1D` is a discrete action code, not a touch stream.
 //! - HID reports relative Y, not Wheel; this engine converts Y to wheel.
-//! - Actions 4/5 and camera/long-press have no stable mapping.
+//! - Actions 4/5 have no stable mapping.
 
 use std::collections::VecDeque;
 
@@ -27,6 +27,8 @@ const HOLD_FAST_MS: u64 = 3000;
 const HOLD_SLOW_STEP: i32 = 2;
 const HOLD_MID_STEP: i32 = 4;
 const HOLD_FAST_STEP: i32 = 8;
+const WAKE_WINDOW_MS: u64 = 60_000;
+const WAKE_EVENT_DEBOUNCE_MS: u64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HidMouseEvent {
@@ -58,6 +60,7 @@ pub enum Output {
 pub struct MappingConfig {
     pub scroll_gain: i32,
     pub inject: bool,
+    pub require_double_tap_wake: bool,
 }
 
 impl Default for MappingConfig {
@@ -65,6 +68,7 @@ impl Default for MappingConfig {
         Self {
             scroll_gain: 4,
             inject: false,
+            require_double_tap_wake: false,
         }
     }
 }
@@ -82,6 +86,8 @@ pub struct MappingEngine {
     ring_button_down: bool,
     ring_gesture_moved: bool,
     last_hid_vertical_ms: Option<u64>,
+    awake_until_ms: Option<u64>,
+    last_wake_ms: Option<u64>,
 }
 
 impl MappingEngine {
@@ -99,6 +105,8 @@ impl MappingEngine {
             ring_button_down: false,
             ring_gesture_moved: false,
             last_hid_vertical_ms: None,
+            awake_until_ms: None,
+            last_wake_ms: None,
         }
     }
 
@@ -125,6 +133,7 @@ impl MappingEngine {
 
     pub fn handle(&mut self, event: InputEvent, now_ms: u64) -> Vec<Output> {
         let mut out = Vec::new();
+        self.expire_wake_window(now_ms, &mut out);
         match event {
             InputEvent::GattPacket(data) => self.handle_gatt(&data, now_ms, &mut out),
             InputEvent::HidMouse(mouse) => self.handle_hid(mouse, now_ms, &mut out),
@@ -135,6 +144,7 @@ impl MappingEngine {
 
     pub fn tick(&mut self, now_ms: u64) -> Vec<Output> {
         let mut out = Vec::new();
+        self.expire_wake_window(now_ms, &mut out);
         self.flush_due_taps(now_ms, &mut out);
         if let Some(delta) = self.next_scroll_delta(now_ms) {
             if delta != 0 {
@@ -165,15 +175,51 @@ impl MappingEngine {
             }
         )));
         if data.len() >= 2 && data[0] == 0x02 && data[1] == 0x02 {
-            out.push(Output::Log(
-                "ACTION R08 兼容按键通知（HID 已处理，不重复计数）".to_string(),
-            ));
+            if self.config.require_double_tap_wake {
+                if self.wake_window_open(now_ms) {
+                    if self.last_wake_ms.is_some_and(|wake_ms| {
+                        now_ms.saturating_sub(wake_ms) < WAKE_EVENT_DEBOUNCE_MS
+                    }) {
+                        out.push(Output::Log(
+                            "ACTION 已忽略同一次唤醒双击的重复兼容通知".to_string(),
+                        ));
+                    } else {
+                        self.awake_until_ms = Some(now_ms.saturating_add(WAKE_WINDOW_MS));
+                        out.push(Output::Copy);
+                        out.push(Output::Log(
+                            "ACTION 唤醒状态下双击 -> 复制；控制时间续期 1 分钟".to_string(),
+                        ));
+                    }
+                } else {
+                    self.open_wake_window(now_ms, out);
+                }
+            } else {
+                out.push(Output::Log(
+                    "ACTION R08 双击/相机兼容事件，当前模式不执行操作".to_string(),
+                ));
+            }
+            return;
+        }
+        if data.len() >= 3 && data[0] == 0x73 && data[1] == 0x2A {
+            if self.config.require_double_tap_wake {
+                if data[2] == 0 {
+                    self.open_wake_window(now_ms, out);
+                } else if data[2] == 1 {
+                    self.close_wake_window(out);
+                }
+            }
             return;
         }
         if data.len() < 2 || data[0] != 0x1D {
             return;
         }
         if data.len() == 16 && !checksum_ok(data) {
+            return;
+        }
+        if self.config.require_double_tap_wake && !self.wake_window_open(now_ms) {
+            out.push(Output::Log(
+                "ACTION 控制仍在待机；请先双击戒指唤醒".to_string(),
+            ));
             return;
         }
         match data[1] {
@@ -220,6 +266,18 @@ impl MappingEngine {
             "HID_MOUSE_R08 buttons=0x{:04X} data={} dx={} dy={}",
             input.button_flags, input.button_data, input.dx, input.dy
         )));
+        if self.config.require_double_tap_wake && !self.wake_window_open(now_ms) {
+            if input.button_flags & LEFT_BUTTON_DOWN != 0 {
+                out.push(Output::ReleaseLeftButton);
+            }
+            if input.dx != 0 || input.dy != 0 {
+                out.push(Output::RestoreCursor);
+            }
+            out.push(Output::Log(
+                "ACTION HID 控制仍在待机；等待双击唤醒事件".to_string(),
+            ));
+            return;
+        }
         if input.button_flags & LEFT_BUTTON_DOWN != 0 {
             self.ring_button_down = true;
             self.ring_gesture_moved = false;
@@ -396,6 +454,41 @@ impl MappingEngine {
         self.scroll_direction = 0;
         None
     }
+
+    fn wake_window_open(&self, now_ms: u64) -> bool {
+        !self.config.require_double_tap_wake
+            || self
+                .awake_until_ms
+                .is_some_and(|deadline| now_ms < deadline)
+    }
+
+    fn open_wake_window(&mut self, now_ms: u64, out: &mut Vec<Output>) {
+        self.clear_pending_actions();
+        self.awake_until_ms = Some(now_ms.saturating_add(WAKE_WINDOW_MS));
+        self.last_wake_ms = Some(now_ms);
+        out.push(Output::Log(
+            "CONTROL_AWAKE 双击唤醒成功；电脑控制已开启 1 分钟".to_string(),
+        ));
+    }
+
+    fn close_wake_window(&mut self, out: &mut Vec<Output>) {
+        if self.awake_until_ms.take().is_some() {
+            self.clear_pending_actions();
+            self.last_wake_ms = None;
+            out.push(Output::Log(
+                "CONTROL_STANDBY 戒指已休眠；电脑控制已关闭，双击可再次唤醒".to_string(),
+            ));
+        }
+    }
+
+    fn expire_wake_window(&mut self, now_ms: u64, out: &mut Vec<Output>) {
+        if self
+            .awake_until_ms
+            .is_some_and(|deadline| now_ms >= deadline)
+        {
+            self.close_wake_window(out);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +504,7 @@ mod tests {
         MappingEngine::new(MappingConfig {
             scroll_gain: 4,
             inject: true,
+            require_double_tap_wake: false,
         })
     }
 
@@ -695,6 +789,47 @@ mod tests {
         let tick = engine.tick(HOLD_FAST_MS + 10);
         let wheels: Vec<_> = outputs_of(|item| matches!(item, Output::Wheel(_)), &tick);
         assert_eq!(wheels, vec![&Output::Wheel(HOLD_FAST_STEP)]);
+    }
+
+    #[test]
+    fn camera_compat_event_opens_one_minute_wake_window() {
+        let mut engine = MappingEngine::new(MappingConfig {
+            scroll_gain: 4,
+            inject: true,
+            require_double_tap_wake: true,
+        });
+
+        engine.handle(gatt_action(3), 0);
+        assert!(!engine
+            .tick(20)
+            .iter()
+            .any(|item| matches!(item, Output::Wheel(_))));
+
+        let wake = build_colmi_packet(&[0x02, 0x02]).unwrap().to_vec();
+        let wake_output = engine.handle(InputEvent::GattPacket(wake), 100);
+        assert!(wake_output
+            .iter()
+            .any(|item| matches!(item, Output::Log(text) if text.contains("CONTROL_AWAKE"))));
+
+        engine.handle(gatt_action(3), 200);
+        assert!(engine
+            .tick(220)
+            .iter()
+            .any(|item| matches!(item, Output::Wheel(delta) if *delta > 0)));
+
+        let copy = build_colmi_packet(&[0x02, 0x02]).unwrap().to_vec();
+        let copy_output = engine.handle(InputEvent::GattPacket(copy), 1_500);
+        assert!(copy_output.contains(&Output::Copy), "{copy_output:?}");
+
+        let expired = engine.tick(61_500);
+        assert!(expired
+            .iter()
+            .any(|item| matches!(item, Output::Log(text) if text.contains("CONTROL_STANDBY"))));
+        engine.handle(gatt_action(3), 61_600);
+        assert!(!engine
+            .tick(61_620)
+            .iter()
+            .any(|item| matches!(item, Output::Wheel(_))));
     }
 
     #[test]

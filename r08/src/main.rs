@@ -100,6 +100,7 @@ async fn main() -> Result<()> {
                     scroll_gain,
                     seconds: 0,
                     interactive_menu: true,
+                    require_double_tap_wake: false,
                 },
             )
             .await
@@ -145,6 +146,7 @@ async fn main() -> Result<()> {
                     scroll_gain: 4,
                     seconds,
                     interactive_menu: false,
+                    require_double_tap_wake: false,
                 },
             )
             .await
@@ -167,6 +169,7 @@ async fn main() -> Result<()> {
                     scroll_gain,
                     seconds,
                     interactive_menu: false,
+                    require_double_tap_wake: true,
                 },
             )
             .await
@@ -207,7 +210,7 @@ async fn self_check() -> Result<()> {
             "not-found"
         }
     );
-    println!("inject_default=on");
+    println!("inject_default=double-tap-gated");
     println!("dfu_writes=blocked");
     println!("target_name={RING_NAME}");
     println!("firmware_backup=not-present");

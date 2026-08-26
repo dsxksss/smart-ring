@@ -32,6 +32,7 @@ pub struct SessionOptions {
     pub scroll_gain: i32,
     pub seconds: u64,
     pub interactive_menu: bool,
+    pub require_double_tap_wake: bool,
 }
 
 pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<()> {
@@ -61,6 +62,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
     let mut engine = MappingEngine::new(MappingConfig {
         scroll_gain: options.scroll_gain.clamp(1, 10),
         inject: options.inject,
+        require_double_tap_wake: options.require_double_tap_wake,
     });
     let mut inject_enabled = options.inject;
     let mut injector: Box<dyn Injector> = if options.inject {
@@ -80,11 +82,13 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
         print_menu(touch_enabled, inject_enabled, &options);
     } else if inject_enabled {
         tracing::info!(
-            "CONTROL_READY 已连接 {} {}；上下滑=滚轮，唤醒后双击=复制，三击=粘贴",
+            "CONTROL_STANDBY 已连接 {} {}；等待戒指双击唤醒，唤醒后 1 分钟内可控制电脑",
             connection.name,
             connection.address
         );
-        println!("控制已开启：戒指休眠时双击唤醒；唤醒后上下滑滚动、双击复制、三击粘贴。");
+        println!(
+            "控制待机：请双击戒指唤醒；绿光亮起后，1 分钟内可上下滑滚动、双击复制、三击粘贴。"
+        );
         println!("按 Enter 或 Ctrl+C 安全退出。");
     } else {
         tracing::info!(

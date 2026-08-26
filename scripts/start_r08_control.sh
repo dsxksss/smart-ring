@@ -8,6 +8,6 @@ if [[ ! -x target/release/r08 ]]; then
 fi
 
 echo "Close the phone ring app and turn off phone Bluetooth first."
-echo "Control starts automatically. Double-tap the sleeping ring to wake it."
+echo "Controller is standing by. Double-tap the ring to enable control for one minute."
 echo "Press Enter or Ctrl+C to exit safely."
 exec ./target/release/r08
