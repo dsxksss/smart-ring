@@ -4,8 +4,9 @@ use super::HidMonitor;
 use crate::mapping::HidMouseEvent;
 
 #[cfg(windows)]
-pub fn spawn(tx: std::sync::mpsc::Sender<HidMouseEvent>) -> Result<HidMonitor> {
-    crate::platform::windows::spawn_hid(tx)
+pub fn spawn(_tx: std::sync::mpsc::Sender<HidMouseEvent>) -> Result<HidMonitor> {
+    tracing::info!("HID_DEVICE Windows 无光标模式不读取戒指鼠标位移；上下滑与点击仅使用 GATT 0x1D");
+    Ok(HidMonitor::new(None, None))
 }
 
 #[cfg(target_os = "linux")]

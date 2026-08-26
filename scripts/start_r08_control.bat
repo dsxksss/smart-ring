@@ -1,6 +1,6 @@
 @echo off
-if /I not "%~1"=="__inner" (
-    "%ComSpec%" /d /k call "%~f0" __inner
+if /I not "%~1"=="__admin" (
+    powershell.exe -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '__admin'"
     exit /b
 )
 
@@ -18,6 +18,7 @@ if not exist "target\release\r08.exe" (
 )
 
 echo Close the phone ring app and turn off phone Bluetooth first.
+echo Administrator mode protects the pointer by disabling only the R08 mouse child.
 echo The numeric menu starts with touch and computer control disabled.
 echo Choose 2 to start computer control, or 0 to exit safely.
 echo.
@@ -25,4 +26,4 @@ target\release\r08.exe interactive --touch-type 2 --sleep-minutes 1 --scroll-gai
 echo.
 echo Controller stopped.
 echo Full log: %CD%\r08-control-latest.log
-echo This window stays open. Type exit and press Enter to close it.
+pause

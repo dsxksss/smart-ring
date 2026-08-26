@@ -5,10 +5,11 @@ pub fn detect() -> PlatformCapabilities {
     PlatformCapabilities {
         os: "windows",
         ble_backend: "Win32 GATT system-connection reuse + WinRT/btleplug fallback",
-        hid_backend: "Raw Input, filtered by 313145379C07",
+        hid_backend: "R08 HID mouse child temporarily disabled; gestures use GATT only",
         inject_backend: "mouse_event / keybd_event",
         notes: vec![
             "完全退出手机官方 App 并关闭手机蓝牙".to_string(),
+            "无光标模式需要管理员权限，仅临时停用 R08 的 HID 鼠标子设备".to_string(),
             "Windows 设置里蓝牙显示未连接不代表 GATT/HID 不可用".to_string(),
             "控制模式默认关闭；需要注入时使用 r08 control".to_string(),
         ],

@@ -12,6 +12,8 @@ pub mod windows;
 pub mod windows_gatt;
 #[cfg(windows)]
 pub mod windows_gatt_win32;
+#[cfg(windows)]
+pub mod windows_pointer;
 
 use crate::mapping::HidMouseEvent;
 
@@ -34,6 +36,38 @@ pub fn spawn_hid_monitor(tx: std::sync::mpsc::Sender<HidMouseEvent>) -> anyhow::
 
 pub fn create_injector() -> anyhow::Result<Box<dyn inject::Injector>> {
     inject::create()
+}
+
+pub struct PointerSuppression {
+    #[cfg(windows)]
+    inner: windows_pointer::RingMouseDeviceGuard,
+}
+
+impl PointerSuppression {
+    pub fn new() -> Self {
+        Self {
+            #[cfg(windows)]
+            inner: windows_pointer::RingMouseDeviceGuard::new(),
+        }
+    }
+
+    pub fn suppress(&mut self) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        self.inner.suppress()?;
+        Ok(())
+    }
+
+    pub fn restore(&mut self) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        self.inner.restore()?;
+        Ok(())
+    }
+}
+
+impl Default for PointerSuppression {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct HidMonitor {

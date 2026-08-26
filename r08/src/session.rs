@@ -9,7 +9,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::ble::RingConnection;
 use crate::mapping::{InputEvent, MappingConfig, MappingEngine, Output};
 use crate::platform::inject::{Injector, NullInjector};
-use crate::platform::{create_injector, spawn_hid_monitor};
+use crate::platform::{create_injector, spawn_hid_monitor, PointerSuppression};
 use crate::protocol::{touch_disable_packet, touch_enable_packet, touch_read_packet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +34,10 @@ pub struct SessionOptions {
 }
 
 pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<()> {
+    let mut pointer_suppression = PointerSuppression::new();
+    pointer_suppression
+        .suppress()
+        .context("无法启用 R08 无光标移动保护；触控未开启")?;
     let mut notifications = connection.subscribe().await?;
     let mut touch_enabled = false;
     if options.touch_on_start {
@@ -233,6 +237,12 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
         }
     }
     let _ = connection.disconnect().await;
+    if let Err(error) = pointer_suppression.restore() {
+        tracing::warn!("恢复 R08 HID 鼠标子设备失败：{error:#}");
+        if run_result.is_ok() {
+            run_result = Err(error.context("退出时未能恢复 R08 HID 鼠标子设备"));
+        }
+    }
     run_result
 }
 

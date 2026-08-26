@@ -6,7 +6,7 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -19,10 +19,10 @@ use windows::Win32::UI::Input::{
     RIDI_DEVICENAME, RID_INPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, PostMessageW, PostQuitMessage, RegisterClassW, SetCursorPos,
-    SetWindowLongPtrW, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, MSG,
-    WM_CLOSE, WM_DESTROY, WM_INPUT, WNDCLASSW, WS_EX_NOACTIVATE, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    GetWindowLongPtrW, PostMessageW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, MSG, WM_CLOSE,
+    WM_DESTROY, WM_INPUT, WNDCLASSW, WS_EX_NOACTIVATE, WS_POPUP,
 };
 
 use crate::identity::RING_MAC_COMPACT;
@@ -253,17 +253,11 @@ fn read_raw_input(hwnd: HWND, handle: HRAWINPUT) {
     }
 }
 
-pub struct WindowsInjector {
-    anchor: POINT,
-}
+pub struct WindowsInjector;
 
 impl WindowsInjector {
     pub fn new() -> Result<Self> {
-        let mut anchor = POINT::default();
-        unsafe {
-            GetCursorPos(&mut anchor)?;
-        }
-        Ok(Self { anchor })
+        Ok(Self)
     }
 
     fn hotkey(&mut self, key: u8) -> Result<()> {
@@ -286,16 +280,10 @@ impl Injector for WindowsInjector {
     }
 
     fn capture_cursor_anchor(&mut self) -> Result<()> {
-        unsafe {
-            GetCursorPos(&mut self.anchor)?;
-        }
         Ok(())
     }
 
     fn restore_cursor(&mut self) -> Result<()> {
-        unsafe {
-            SetCursorPos(self.anchor.x, self.anchor.y)?;
-        }
         Ok(())
     }
 
