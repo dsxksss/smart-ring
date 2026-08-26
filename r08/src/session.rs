@@ -39,12 +39,24 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
     pointer_suppression
         .suppress()
         .context("无法启用 R08 无光标移动保护；触控未开启")?;
-    let mut notifications = connection.subscribe().await?;
     let mut touch_enabled = false;
     if options.touch_on_start {
         set_touch_enabled(&connection, &options, true).await?;
         touch_enabled = true;
     }
+    tracing::info!("正在订阅 R08 动作通知……");
+    let mut notifications = match connection.subscribe().await {
+        Ok(notifications) => notifications,
+        Err(error) => {
+            if touch_enabled {
+                let _ = set_touch_enabled(&connection, &options, false).await;
+            }
+            let _ = connection.disconnect().await;
+            let _ = pointer_suppression.restore();
+            return Err(error).context("订阅 R08 动作通知失败；已关闭触控并恢复设备");
+        }
+    };
+    tracing::info!("R08 动作通知订阅完成");
 
     let mut engine = MappingEngine::new(MappingConfig {
         scroll_gain: options.scroll_gain.clamp(1, 10),

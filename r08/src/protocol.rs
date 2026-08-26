@@ -158,7 +158,11 @@ pub fn describe_colmi_packet(data: &[u8]) -> String {
     match data[0] {
         0x73 => {
             if data[1] == 0x2A {
-                format!("R08 未知状态通知 0x2A={}", data[2])
+                match data[2] {
+                    0 => "R08 触控状态：已唤醒".to_string(),
+                    1 => "R08 触控状态：已休眠，请双击戒指唤醒".to_string(),
+                    value => format!("R08 触控状态：未知值 {value}"),
+                }
             } else {
                 format!("设备通知 0x{:02X}，值={}", data[1], data[2])
             }
@@ -275,10 +279,11 @@ mod tests {
     fn describes_observed_r08_notification() {
         let packet = parse_hex_payload("732a010000000000000000000000009e").unwrap();
         let description = describe_colmi_packet(&packet);
-        assert!(
-            description.contains("R08 未知状态通知 0x2A=1"),
-            "{description}"
-        );
+        assert!(description.contains("已休眠"), "{description}");
+        assert!(description.contains("双击"), "{description}");
+
+        let awake = parse_hex_payload("732a000000000000000000000000009d").unwrap();
+        assert!(describe_colmi_packet(&awake).contains("已唤醒"));
     }
 
     #[test]
