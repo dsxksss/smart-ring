@@ -8,6 +8,10 @@ pub mod linux;
 pub mod macos;
 #[cfg(windows)]
 pub mod windows;
+#[cfg(windows)]
+pub mod windows_gatt;
+#[cfg(windows)]
+pub mod windows_gatt_win32;
 
 use crate::mapping::HidMouseEvent;
 

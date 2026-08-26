@@ -1,3 +1,4 @@
+use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -5,22 +6,31 @@ use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::identity::{is_ring_advertisement, RING_NAME};
+use crate::identity::{is_ring_advertisement, RING_MAC, RING_NAME};
 use crate::protocol::{
     format_packet, is_dfu_uuid, reject_if_dfu, DIS_SERVICE, NORDIC_UART_NOTIFY, NORDIC_UART_WRITE,
 };
 
-#[derive(Clone)]
 pub struct RingConnection {
-    pub peripheral: Peripheral,
     pub name: String,
     pub address: String,
-    write: Characteristic,
-    notify: Characteristic,
+    backend: RingBackend,
+}
+
+enum RingBackend {
+    Btleplug {
+        peripheral: Peripheral,
+        write: Characteristic,
+        notify: Characteristic,
+    },
+    #[cfg(windows)]
+    WindowsNative(crate::platform::windows_gatt::WindowsGattConnection),
+    #[cfg(windows)]
+    WindowsWin32(crate::platform::windows_gatt_win32::WindowsGattWin32Connection),
 }
 
 pub async fn adapters() -> Result<Vec<Adapter>> {
@@ -63,6 +73,32 @@ pub async fn scan(scan_seconds: u64) -> Result<Vec<(String, String)>> {
 }
 
 pub async fn connect(scan_seconds: u64) -> Result<RingConnection> {
+    #[cfg(windows)]
+    match crate::platform::windows_gatt_win32::WindowsGattWin32Connection::connect_known().await {
+        Ok(connection) => {
+            return Ok(RingConnection {
+                name: RING_NAME.to_string(),
+                address: RING_MAC.to_string(),
+                backend: RingBackend::WindowsWin32(connection),
+            });
+        }
+        Err(error) => {
+            tracing::warn!("Windows Win32 GATT 系统连接复用失败，将尝试 WinRT：{error:#}")
+        }
+    }
+
+    #[cfg(windows)]
+    match crate::platform::windows_gatt::WindowsGattConnection::connect_known().await {
+        Ok(connection) => {
+            return Ok(RingConnection {
+                name: RING_NAME.to_string(),
+                address: RING_MAC.to_string(),
+                backend: RingBackend::WindowsNative(connection),
+            });
+        }
+        Err(error) => tracing::warn!("Windows 已配对设备直连失败，将尝试广播扫描：{error:#}"),
+    }
+
     let adapters = adapters().await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(scan_seconds.max(3));
     for adapter in &adapters {
@@ -133,11 +169,13 @@ pub async fn connect(scan_seconds: u64) -> Result<RingConnection> {
         .with_context(|| format!("缺少通知特征 {NORDIC_UART_NOTIFY}"))?;
     reject_if_dfu(write.uuid)?;
     Ok(RingConnection {
-        peripheral,
         name,
         address,
-        write,
-        notify,
+        backend: RingBackend::Btleplug {
+            peripheral,
+            write,
+            notify,
+        },
     })
 }
 
@@ -149,39 +187,63 @@ async fn advertisement_identity(peripheral: &Peripheral) -> Option<(String, Stri
 }
 
 impl RingConnection {
-    pub async fn subscribe(&self) -> Result<impl futures::Stream<Item = Vec<u8>>> {
-        self.peripheral
-            .subscribe(&self.notify)
-            .await
-            .context("启用通知失败")?;
-        let stream = self
-            .peripheral
-            .notifications()
-            .await
-            .context("打开通知流失败")?;
-        Ok(stream.map(|event| event.value))
+    pub async fn subscribe(&self) -> Result<Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>> {
+        match &self.backend {
+            RingBackend::Btleplug {
+                peripheral, notify, ..
+            } => {
+                peripheral.subscribe(notify).await.context("启用通知失败")?;
+                let stream = peripheral.notifications().await.context("打开通知流失败")?;
+                Ok(Box::pin(stream.map(|event| event.value)))
+            }
+            #[cfg(windows)]
+            RingBackend::WindowsNative(connection) => connection.subscribe().await,
+            #[cfg(windows)]
+            RingBackend::WindowsWin32(connection) => connection.subscribe().await,
+        }
     }
 
     pub async fn write(&self, packet: &[u8]) -> Result<()> {
-        reject_if_dfu(self.write.uuid)?;
-        tracing::info!("TX  {}", format_packet(packet));
-        self.peripheral
-            .write(&self.write, packet, WriteType::WithResponse)
-            .await
-            .context("GATT 写入失败")?;
-        Ok(())
+        match &self.backend {
+            RingBackend::Btleplug {
+                peripheral, write, ..
+            } => {
+                reject_if_dfu(write.uuid)?;
+                tracing::info!("TX  {}", format_packet(packet));
+                peripheral
+                    .write(write, packet, WriteType::WithResponse)
+                    .await
+                    .context("GATT 写入失败")?;
+                Ok(())
+            }
+            #[cfg(windows)]
+            RingBackend::WindowsNative(connection) => connection.write(packet).await,
+            #[cfg(windows)]
+            RingBackend::WindowsWin32(connection) => connection.write(packet).await,
+        }
     }
 
     pub async fn read_device_information(&self) -> Result<Vec<(String, String)>> {
+        let RingBackend::Btleplug { peripheral, .. } = &self.backend else {
+            #[cfg(windows)]
+            if let RingBackend::WindowsNative(connection) = &self.backend {
+                return connection.read_device_information().await;
+            }
+            #[cfg(windows)]
+            if let RingBackend::WindowsWin32(connection) = &self.backend {
+                return connection.read_device_information().await;
+            }
+            unreachable!("当前平台只存在 btleplug 蓝牙后端");
+        };
         let mut rows = Vec::new();
-        for characteristic in self.peripheral.characteristics() {
+        for characteristic in peripheral.characteristics() {
             if is_dfu_uuid(characteristic.uuid) {
                 continue;
             }
             let Some(label) = dis_label(characteristic.uuid) else {
                 continue;
             };
-            match self.peripheral.read(&characteristic).await {
+            match peripheral.read(&characteristic).await {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes)
                         .trim_end_matches('\0')
@@ -199,7 +261,7 @@ impl RingConnection {
                 Err(error) => rows.push((label.to_string(), format!("读取失败：{error}"))),
             }
         }
-        for service in self.peripheral.services() {
+        for service in peripheral.services() {
             if service.uuid == DIS_SERVICE {
                 tracing::info!("DEVICE_INFO_READ_ONLY 发现标准设备信息服务");
             }
@@ -208,9 +270,19 @@ impl RingConnection {
     }
 
     pub async fn disconnect(&self) -> Result<()> {
-        let _ = self.peripheral.unsubscribe(&self.notify).await;
-        self.peripheral.disconnect().await.ok();
-        Ok(())
+        match &self.backend {
+            RingBackend::Btleplug {
+                peripheral, notify, ..
+            } => {
+                let _ = peripheral.unsubscribe(notify).await;
+                peripheral.disconnect().await.ok();
+                Ok(())
+            }
+            #[cfg(windows)]
+            RingBackend::WindowsNative(connection) => connection.disconnect().await,
+            #[cfg(windows)]
+            RingBackend::WindowsWin32(connection) => connection.disconnect().await,
+        }
     }
 }
 

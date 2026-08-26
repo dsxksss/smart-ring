@@ -34,7 +34,7 @@ pub struct SessionOptions {
 }
 
 pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<()> {
-    let mut notifications = Box::pin(connection.subscribe().await?);
+    let mut notifications = connection.subscribe().await?;
     let mut touch_enabled = false;
     if options.touch_on_start {
         set_touch_enabled(&connection, &options, true).await?;

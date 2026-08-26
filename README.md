@@ -36,11 +36,13 @@ cargo build -p r08 --release
 
 快捷脚本：`scripts/start_r08_control.sh` / `.bat`，停止用 `scripts/stop_r08_touch.sh` / `.bat`。交互和控制模式会把日志同时写到 `r08-control-latest.log`。菜单输入 `0` 或按 Ctrl+C 都会释放按键并关闭触控。
 
+需要查看成功连接、TX/RX 和戒指真实休眠状态时，可先在 PowerShell 执行 `$env:RUST_LOG='info'`；如果环境中设为 `warn`，日志只记录警告，成功运行时文件可能为空。
+
 运行时请完全退出手机官方 App 并关闭手机蓝牙。程序只匹配 `R08_9C07` / `31:31:45:37:9C:07`，普通鼠标不参与映射。交互菜单必须选择 `2` 才会注入电脑操作；菜单初始状态、`listen` 和调试模式默认关闭注入。
 
 三平台差异：
 
-- **Windows**：GATT（btleplug）+ Raw Input 相对 Y。戒指把上下滑报成指针位移，程序转成高分辨率滚轮并恢复光标。复制/粘贴为 Ctrl+C / Ctrl+V。
+- **Windows**：优先通过 Win32 GATT 复用系统已经建立的 BLE/HID 连接，不要求戒指重新广播；失败时才回退到 WinRT 和 btleplug 扫描。Raw Input 读取相对 Y，程序把戒指上下滑转成高分辨率滚轮并恢复光标。复制/粘贴为 Ctrl+C / Ctrl+V。
 - **Linux**：GATT（BlueZ）+ evdev grab。grab 后戒指不会推动系统指针。滚轮经 `/dev/uinput` 的 `REL_WHEEL_HI_RES` 注入；用户需要 `input` 组权限。
 - **macOS**：GATT（Core Bluetooth）可用。系统 HID 会占用 BLE 鼠标，因此没有逐点相对 Y 跟踪；上下滑走离散 GATT `0x1D`。复制/粘贴为 Command+C / Command+V，需要辅助功能权限。不要把平滑拆步说成真实触摸跟踪。
 

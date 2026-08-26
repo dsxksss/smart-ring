@@ -4,7 +4,7 @@ use super::PlatformCapabilities;
 pub fn detect() -> PlatformCapabilities {
     PlatformCapabilities {
         os: "windows",
-        ble_backend: "WinRT GATT (btleplug)",
+        ble_backend: "Win32 GATT system-connection reuse + WinRT/btleplug fallback",
         hid_backend: "Raw Input, filtered by 313145379C07",
         inject_backend: "mouse_event / keybd_event",
         notes: vec![
