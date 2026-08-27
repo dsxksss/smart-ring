@@ -25,6 +25,13 @@ from analyze_rt08_thumb import (
 EXPECTED_V8_SHA256 = (
     "4b44c8a82f227e6697e7c5dc2633db5ed478f69ca28684b19d7fb17920d08441"
 )
+EXPECTED_V9_SHA256 = (
+    "681dbb3e7a9112fc85b1d8e546717eb5052ae7a7138b117b6dfff75de7eba1f5"
+)
+SUPPORTED_IMAGES = {
+    EXPECTED_V8_SHA256: "V8",
+    EXPECTED_V9_SHA256: "V9",
+}
 HANDLER_ENTRY = 0x0082C602
 INDICATOR_ENGINE = 0x00829B86
 TOUCH_REPEAT_ADDRESS = 0x0082C604
@@ -45,8 +52,9 @@ def _load_unicorn() -> tuple[Any, Any]:
 
 def validate_touch_indicator(image: bytes) -> dict[str, Any]:
     image_hash = hashlib.sha256(image).hexdigest()
-    if image_hash != EXPECTED_V8_SHA256:
-        raise ValueError(f"v8 SHA-256 mismatch: {image_hash}")
+    version = SUPPORTED_IMAGES.get(image_hash)
+    if version is None:
+        raise ValueError(f"v8/v9 SHA-256 mismatch: {image_hash}")
     repeat_offset = address_to_file_offset(TOUCH_REPEAT_ADDRESS, len(image))
     repeat_instruction = image[
         repeat_offset : repeat_offset + len(EXPECTED_REPEAT_INSTRUCTION)
@@ -88,7 +96,8 @@ def validate_touch_indicator(image: bytes) -> dict[str, Any]:
         raise AssertionError(f"optical sensor function reached: {optical_reached}")
 
     return {
-        "classification": "INSTRUCTION_LEVEL_V8_TOUCH_INDICATOR_VALIDATION",
+        "classification": f"INSTRUCTION_LEVEL_{version}_TOUCH_INDICATOR_VALIDATION",
+        "firmware_profile": version.lower(),
         "image_sha256": image_hash,
         "handler_entry": f"0x{HANDLER_ENTRY:08X}",
         "indicator_engine": f"0x{INDICATOR_ENGINE:08X}",

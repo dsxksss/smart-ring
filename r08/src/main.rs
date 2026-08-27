@@ -280,7 +280,7 @@ async fn main() -> Result<()> {
             .validate()?;
             println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
             if double_tap_wake {
-                println!("组合模式不会刷写固件，也不会发送会切断 GATT 的 3B 触控命令；待机 IMU 只检测双敲，确认两次后开启 60 秒转动滚动。");
+                println!("组合模式不会刷写固件。检测到 v9 A1 FC 标记时使用电容触控区双击唤醒；旧固件保留主机 IMU 双敲兜底。");
             } else {
                 println!("该命令不会刷写固件；将发送候选 A1 09 启停命令，任何异常均急停。按 Enter 或 Ctrl+C 退出。");
             }

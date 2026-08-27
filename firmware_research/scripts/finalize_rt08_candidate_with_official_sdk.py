@@ -44,6 +44,21 @@ PROFILES = {
         "imu_patch_present": True,
         "touch_indicator_repeat": 3,
     },
+    "imu-touch-v9": {
+        "input_sha256": "b194b95f808bef0814a3b046e3c738d42ecd3d10819576ebe823a380faf5d301",
+        "old_digest": bytes.fromhex(
+            "3e143d383a69b749ed928345ac04d517d7aefb95ecc0f2f4eafbe9fd9b146f8f"
+        ),
+        "new_digest": bytes.fromhex(
+            "1bc598209c53b748218d65346a20b823ee3db0f0e797ee1bfbb92db6d6570126"
+        ),
+        "classification": "SDK_FINALIZED_IMU_TOUCH_V9_CANDIDATE",
+        "output_sha256": "681dbb3e7a9112fc85b1d8e546717eb5052ae7a7138b117b6dfff75de7eba1f5",
+        "activation_marker_status": "0xFC/0xFE",
+        "imu_patch_present": True,
+        "touch_indicator_repeat": 3,
+        "hid_mouse_reports_blocked": True,
+    },
 }
 DEFAULT_PROFILE = PROFILES["imu-v7"]
 EXPECTED_INPUT_SHA256 = DEFAULT_PROFILE["input_sha256"]
@@ -100,7 +115,13 @@ def finalize_candidate(
         for index, (before, after) in enumerate(zip(original_inner, processed_inner))
         if before != after
     }
-    expected_differences = set(range(INNER_SHA256_OFFSET, INNER_SHA256_OFFSET + 32))
+    expected_differences = {
+        INNER_SHA256_OFFSET + index
+        for index, (before, after) in enumerate(
+            zip(selected["old_digest"], selected["new_digest"])
+        )
+        if before != after
+    }
     if inner_differences != expected_differences:
         unexpected = inner_differences ^ expected_differences
         first = min(unexpected) if unexpected else -1
@@ -139,6 +160,9 @@ def finalize_candidate(
         "activation_marker_status": selected["activation_marker_status"],
         "imu_patch_present": selected["imu_patch_present"],
         "touch_indicator_repeat": selected.get("touch_indicator_repeat"),
+        "hid_mouse_reports_blocked": selected.get(
+            "hid_mouse_reports_blocked", False
+        ),
         "flash_allowed": False,
     }
 

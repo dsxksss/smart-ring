@@ -4,11 +4,12 @@
 //! ordinary UART start/stop command only after the CLI's explicit opt-in.
 
 use std::f64::consts::PI;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::ble::RingConnection;
@@ -16,9 +17,11 @@ use crate::mapping::{InputEvent, MappingConfig, MappingEngine, Output};
 use crate::platform::inject::{Injector, NullInjector};
 use crate::platform::{create_injector, PointerSuppression};
 use crate::protocol::{
-    decode_uart_battery_response, format_packet, imu_stream_start_packet, imu_stream_stop_packet,
-    uart_battery_query_packet, AccelerometerSample, ImuStreamEvaluation, ImuStreamSample,
-    ImuStreamStopReason, ImuStreamTracker,
+    decode_firmware_capability_status, decode_uart_battery_response,
+    firmware_capability_probe_packet, format_packet, imu_stream_start_packet,
+    imu_stream_stop_packet, touch_disable_packet, touch_enable_packet, uart_battery_query_packet,
+    AccelerometerSample, ImuStreamEvaluation, ImuStreamSample, ImuStreamStopReason,
+    ImuStreamTracker, IMU_TOUCH_V9_CAPABILITY_STATUS,
 };
 
 pub const EXPECTED_HARDWARE: &str = "RT08_V3.1";
@@ -52,6 +55,11 @@ const TAP_MIN_INTERVAL_MS: u64 = 250;
 const TAP_MAX_INTERVAL_MS: u64 = 850;
 const TAP_STREAM_SETTLE_MS: u64 = 1_500;
 const STANDBY_RETRY_BACKOFF_MS: u64 = 1_000;
+const CAPABILITY_PROBE_TIMEOUT_MS: u64 = 1_500;
+const TOUCH_ARM_TIMEOUT_MS: u64 = 1_500;
+const TOUCH_ARM_SETTLE_MS: u64 = 1_000;
+
+type NotificationStream = Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationPlane {
@@ -360,6 +368,68 @@ pub struct ImuStreamOptions {
     pub config: ImuWheelConfig,
 }
 
+async fn probe_v9_touch_capability(
+    connection: &RingConnection,
+    notifications: &mut NotificationStream,
+) -> Result<bool> {
+    connection
+        .write(&firmware_capability_probe_packet())
+        .await
+        .context("发送只读固件能力标记查询失败")?;
+    let status = tokio::time::timeout(Duration::from_millis(CAPABILITY_PROBE_TIMEOUT_MS), async {
+        loop {
+            let packet = notifications
+                .next()
+                .await
+                .context("固件能力标记返回前通知流结束")?;
+            if let Some(status) = decode_firmware_capability_status(&packet) {
+                return Ok::<u8, anyhow::Error>(status);
+            }
+            tracing::info!(
+                packet = %format_packet(&packet),
+                "CAPABILITY_PROBE_IGNORED 等待 A1 FC..FF 时忽略其他通知"
+            );
+        }
+    })
+    .await
+    .context("固件能力标记查询超时")??;
+    tracing::info!(
+        status = format_args!("0x{status:02X}"),
+        "FIRMWARE_CAPABILITY 已读取独立 A1 状态标记"
+    );
+    Ok(status == IMU_TOUCH_V9_CAPABILITY_STATUS)
+}
+
+async fn arm_v9_touch(
+    connection: &RingConnection,
+    notifications: &mut NotificationStream,
+) -> Result<()> {
+    let packet = touch_enable_packet(2, 1);
+    connection
+        .write(&packet)
+        .await
+        .context("发送 v9 原生触控双击唤醒配置失败")?;
+    tokio::time::timeout(Duration::from_millis(TOUCH_ARM_TIMEOUT_MS), async {
+        loop {
+            let response = notifications
+                .next()
+                .await
+                .context("v9 触控设置应答前通知流结束")?;
+            if response.as_slice() == packet {
+                return Ok::<(), anyhow::Error>(());
+            }
+            tracing::info!(
+                packet = %format_packet(&response),
+                "TOUCH_ARM_IGNORED 等待 3B 精确应答时忽略其他通知"
+            );
+        }
+    })
+    .await
+    .context("v9 触控设置应答超时；未启动 IMU")??;
+    tracing::info!("FIRMWARE_TOUCH_WAKE_ARMED v9 已确认 3B 设置；等待电容触控区双击上报 73 2A 00");
+    Ok(())
+}
+
 pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Result<()> {
     let mut mapper = ImuWheelMapper::new(options.config)?;
     if let Err(error) = verify_device_identity(&connection).await {
@@ -367,21 +437,6 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
         return Err(error);
     }
     let mut pointer_suppression = PointerSuppression::new();
-    if options.double_tap_wake {
-        match pointer_suppression.suppress_if_present() {
-            Ok(true) => {}
-            Ok(false) => tracing::info!(
-                "R08_POINTER_BLOCK_NOT_NEEDED Windows 当前没有 R08 HID 鼠标子设备；GATT 组合模式可安全继续"
-            ),
-            Err(error) => {
-                let _ = connection.disconnect().await;
-                return Err(error).context("检查 R08 无光标移动保护失败；组合模式未启动");
-            }
-        }
-        tracing::info!(
-            "IMU_TAP_WAKE_READY 待机保持 v7 IMU 流，仅识别两次敲击，不发送会关闭 GATT 的 3B 触控命令"
-        );
-    }
     let mut notifications = match connection.subscribe().await {
         Ok(notifications) => notifications,
         Err(error) => {
@@ -433,10 +488,61 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
         battery_percent,
         "UART_NOTIFY_READY 已收到只读电量应答；通知通道可用"
     );
+    let firmware_touch_wake = if options.double_tap_wake {
+        match probe_v9_touch_capability(&connection, &mut notifications).await {
+            Ok(true) => true,
+            Ok(false) => false,
+            Err(error) => {
+                tracing::warn!(
+                    "FIRMWARE_CAPABILITY_FALLBACK 未确认 v9 A1 FC 标记，将保留主机 IMU 双敲模式：{error:#}"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if firmware_touch_wake {
+        if !connection.supports_v9_touch_imu_combo() {
+            let backend = connection.backend_name();
+            let _ = connection.disconnect().await;
+            bail!(
+                "v9 原生触控+IMU 组合模式只允许已验证的 Windows Win32 GATT 路径；当前后端={backend}"
+            );
+        }
+        if let Err(error) = arm_v9_touch(&connection, &mut notifications).await {
+            let _ = connection
+                .write_without_response(&touch_disable_packet(1))
+                .await;
+            let _ = connection.disconnect().await;
+            return Err(error).context("v9 原生触控唤醒未能安全武装；IMU 未启动");
+        }
+        tracing::info!(
+            backend = connection.backend_name(),
+            "R08_POINTER_BLOCK_FIRMWARE v9 已在戒指端屏蔽 HID 鼠标报告；不需要管理员停用设备"
+        );
+    } else if options.double_tap_wake {
+        match pointer_suppression.suppress_if_present() {
+            Ok(true) => {}
+            Ok(false) => tracing::info!(
+                "R08_POINTER_BLOCK_NOT_NEEDED Windows 当前没有 R08 HID 鼠标子设备；GATT 组合模式可安全继续"
+            ),
+            Err(error) => {
+                let _ = connection.disconnect().await;
+                return Err(error).context("检查 R08 无光标移动保护失败；组合模式未启动");
+            }
+        }
+        tracing::info!("IMU_TAP_WAKE_READY 未检测到 v9 标记；保留主机 IMU 双敲兜底且不发送 3B");
+    }
     let mut injector: Box<dyn Injector> = if options.inject {
         match create_injector() {
             Ok(injector) => injector,
             Err(error) => {
+                if firmware_touch_wake {
+                    let _ = connection
+                        .write_without_response(&touch_disable_packet(1))
+                        .await;
+                }
                 if options.double_tap_wake {
                     let _ = pointer_suppression.restore();
                 }
@@ -466,6 +572,11 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
 
     if let Err(error) = connection.write_without_response(&start_packet).await {
         let _ = connection.write_without_response(&stop_packet).await;
+        if firmware_touch_wake {
+            let _ = connection
+                .write_without_response(&touch_disable_packet(1))
+                .await;
+        }
         let _ = injector.release_all();
         let _ = connection.disconnect().await;
         return Err(error).context("启动候选 IMU 流失败");
@@ -477,9 +588,19 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
         "IMU_STREAM_ARMED 等待 10 Hz A2/10；首包限时 1.5 秒，进入稳态后 750 ms 无数据将急停"
     );
     if options.double_tap_wake {
-        tracing::info!("IMU_CONTROL_STANDBY 请连续轻敲戒指两次；单次敲击只记录候选，不会启动滚动");
-        println!("控制待机：数据流稳定约 1.5 秒后，请间隔约 0.25～0.85 秒连续轻敲戒指两次。");
-        println!("说明：组合模式通过戒指 IMU 感知敲击，无法判断是否命中电容触控区域；它不会发送 3B，也不会移动鼠标。");
+        if firmware_touch_wake {
+            tracing::info!(
+                "IMU_CONTROL_STANDBY v9 原生触控已武装；只接受电容触控区双击唤醒，不使用 IMU 敲击判断"
+            );
+            println!("控制待机：请双击戒指电容触控区域；看到 IMU_CONTROL_AWAKE 后再转动戒指。");
+            println!("v9 已在戒指端屏蔽 HID 鼠标报告，因此触控过程不会移动电脑光标。");
+        } else {
+            tracing::info!(
+                "IMU_CONTROL_STANDBY 请连续轻敲戒指两次；单次敲击只记录候选，不会启动滚动"
+            );
+            println!("控制待机：数据流稳定约 1.5 秒后，请间隔约 0.25～0.85 秒连续轻敲戒指两次。");
+            println!("说明：未检测到 v9 标记，当前仍通过戒指 IMU 感知敲击，无法判断是否命中电容触控区域。");
+        }
         println!("看到 IMU_CONTROL_AWAKE 后保持正常姿态约 1 秒，再转动滚动。60 秒后停止注入；按 Enter 或 Ctrl+C 安全退出。");
     } else if options.inject {
         tracing::info!("IMU_SCROLL_CALIBRATING 请保持正常姿态约 1 秒");
@@ -507,6 +628,7 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
             _ = tick.tick() => {
                 let now_ms = started.elapsed().as_millis() as u64;
                 if options.double_tap_wake
+                    && !firmware_touch_wake
                     && now_ms.saturating_sub(last_pointer_check_ms) >= 1_000
                 {
                     last_pointer_check_ms = now_ms;
@@ -530,7 +652,7 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
                             .expect("validated IMU wheel configuration");
                         tap_detector.reset();
                         tracing::info!(
-                            "IMU_CONTROL_STANDBY 60 秒控制窗口结束；已停止输入注入，IMU 继续低速监听下一次双敲"
+                            "IMU_CONTROL_STANDBY 60 秒控制窗口结束；已停止输入注入，等待下一次双击唤醒"
                         );
                     }
                 }
@@ -624,6 +746,15 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
                 let now_ms = started.elapsed().as_millis() as u64;
                 let is_stream_packet = packet.len() >= 2 && packet[0] == 0xA2 && packet[1] == 0x10;
                 if !is_stream_packet {
+                    if firmware_touch_wake
+                        && now_ms < TOUCH_ARM_SETTLE_MS
+                        && packet.get(..3) == Some(&[0x73, 0x2A, 0x00])
+                    {
+                        tracing::info!(
+                            "TOUCH_INITIAL_AWAKE_IGNORED 忽略 3B 武装后 1 秒内的初始唤醒状态；仍需真实双击"
+                        );
+                        continue;
+                    }
                     if let Some(engine) = touch_engine.as_mut() {
                         let outputs = engine.handle(InputEvent::GattPacket(packet), now_ms);
                         if let Err(error) = apply_touch_outputs(&mut injector, outputs) {
@@ -651,7 +782,7 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
                             mapper = ImuWheelMapper::new(options.config)
                                 .expect("validated IMU wheel configuration");
                             tap_detector.reset();
-                            tracing::info!("IMU_CONTROL_STANDBY 戒指触控窗口已关闭；IMU 继续监听下一次双敲");
+                            tracing::info!("IMU_CONTROL_STANDBY 戒指触控窗口已关闭；等待下一次双击唤醒");
                         }
                         continue;
                     }
@@ -733,7 +864,10 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
                                 "IMU_RECOVERY_BUDGET_RESET 数据流已稳定，连续恢复预算已清零"
                             );
                         }
-                        if options.double_tap_wake && !control_active {
+                        if options.double_tap_wake
+                            && !firmware_touch_wake
+                            && !control_active
+                        {
                             if !tap_detection_ready(now_ms, stream_started_at_ms) {
                                 tap_detector.reset();
                                 continue;
@@ -802,15 +936,26 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
     }
 
     let stop_error = connection.write_without_response(&stop_packet).await.err();
+    let touch_disable_error = if firmware_touch_wake {
+        connection
+            .write_without_response(&touch_disable_packet(1))
+            .await
+            .err()
+    } else {
+        None
+    };
     let release_result = injector.release_all();
     let disconnect_result = connection.disconnect().await;
-    let pointer_result = if options.double_tap_wake {
+    let pointer_result = if options.double_tap_wake && !firmware_touch_wake {
         pointer_suppression.restore()
     } else {
         Ok(())
     };
     if let Some(error) = stop_error.as_ref() {
         tracing::warn!("发送 IMU 停止命令失败：{error:#}");
+    }
+    if let Some(error) = touch_disable_error.as_ref() {
+        tracing::warn!("退出时关闭 v9 原生触控失败：{error:#}");
     }
     match run_result {
         Err(error) => {
@@ -826,6 +971,9 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
             Err(error)
         }
         Ok(()) => {
+            if let Some(error) = touch_disable_error {
+                return Err(error).context("退出时关闭 v9 原生触控失败");
+            }
             release_result.context("退出时释放输入状态失败")?;
             disconnect_result.context("退出时断开戒指失败")?;
             pointer_result.context("退出时恢复 R08 HID 鼠标子设备失败")?;

@@ -248,6 +248,23 @@ async fn advertisement_identity(peripheral: &Peripheral) -> Option<(String, Stri
 }
 
 impl RingConnection {
+    pub fn backend_name(&self) -> &'static str {
+        match &self.backend {
+            RingBackend::Btleplug { .. } => "btleplug",
+            #[cfg(windows)]
+            RingBackend::WindowsNative(_) => "windows-winrt",
+            #[cfg(windows)]
+            RingBackend::WindowsWin32(_) => "windows-win32-gatt",
+        }
+    }
+
+    pub fn supports_v9_touch_imu_combo(&self) -> bool {
+        #[cfg(windows)]
+        return matches!(&self.backend, RingBackend::WindowsWin32(_));
+        #[cfg(not(windows))]
+        false
+    }
+
     pub async fn subscribe(&self) -> Result<Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>> {
         match &self.backend {
             RingBackend::Btleplug {

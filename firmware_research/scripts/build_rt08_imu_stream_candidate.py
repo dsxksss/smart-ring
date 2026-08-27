@@ -39,17 +39,25 @@ INNER_GIT_VERSION_OFFSET = HEADER_SIZE + 0x60
 EXPECTED_STOCK_GIT_VERSION = 0x00001041  # 1.4.1 in T_IMAGE_VERSION layout
 BUMPED_GIT_VERSION = 0x00006041  # 1.4.6; newer than the activated v6 probe
 TOUCH_V8_GIT_VERSION = 0x00007041  # 1.4.7; newer than installed IMU v7
+TOUCH_V9_GIT_VERSION = 0x00008041  # 1.4.8; HID mouse reports blocked
 OUTER_FIRMWARE_OFFSET = 0x10
 EXPECTED_OUTER_FIRMWARE = b"RT08_3.10.48_260309"
 BUMPED_OUTER_FIRMWARE = b"RT08_3.10.51_260827"
 TOUCH_V8_OUTER_FIRMWARE = b"RT08_3.10.52_260827"
+TOUCH_V9_OUTER_FIRMWARE = b"RT08_3.10.53_260827"
 DEFAULT_STATUS_ADDRESS = 0x008280CA
 DEFAULT_STATUS_ORIGINAL = bytes.fromhex("ff 21")  # movs r1, #0xff
 DEFAULT_STATUS_MARKER = bytes.fromhex("fd 21")  # movs r1, #0xfd
+TOUCH_V9_STATUS_MARKER = bytes.fromhex("fc 21")  # movs r1, #0xfc
 TOUCH_INDICATOR_REPEAT_ADDRESS = 0x0082C604
 TOUCH_INDICATOR_REPEAT_ORIGINAL = bytes.fromhex("19 23")  # movs r3, #25
 MIN_TOUCH_INDICATOR_REPEAT = 1
 MAX_TOUCH_INDICATOR_REPEAT = 10
+HID_MOUSE_REPORT_FUNCTIONS = (
+    (0x00829F74, bytes.fromhex("1f b5"), bytes.fromhex("70 47")),
+    (0x00829FAA, bytes.fromhex("1f b5"), bytes.fromhex("70 47")),
+    (0x00829FD4, bytes.fromhex("1f b5"), bytes.fromhex("70 47")),
+)
 EXPECTED_LITERAL_WORDS = (
     0x00209CB8,
     0x00209CC8,
@@ -122,6 +130,7 @@ def build_candidate(
     bump_outer_revision: bool = False,
     add_activation_marker: bool = False,
     touch_indicator_repeat: int | None = None,
+    block_hid_mouse_reports: bool = False,
     revision_profile: str = "imu-v7",
 ) -> tuple[bytes, dict[str, Any]]:
     load_image_bytes = bytearray(stock)
@@ -140,18 +149,35 @@ def build_candidate(
         }
     )
     revision_profiles = {
-        "imu-v7": (BUMPED_GIT_VERSION, BUMPED_OUTER_FIRMWARE, "1.4.6"),
+        "imu-v7": (
+            BUMPED_GIT_VERSION,
+            BUMPED_OUTER_FIRMWARE,
+            "1.4.6",
+            DEFAULT_STATUS_MARKER,
+        ),
         "imu-touch-v8": (
             TOUCH_V8_GIT_VERSION,
             TOUCH_V8_OUTER_FIRMWARE,
             "1.4.7",
+            DEFAULT_STATUS_MARKER,
+        ),
+        "imu-touch-v9": (
+            TOUCH_V9_GIT_VERSION,
+            TOUCH_V9_OUTER_FIRMWARE,
+            "1.4.8",
+            TOUCH_V9_STATUS_MARKER,
         ),
     }
     if revision_profile not in revision_profiles:
         raise ValueError(f"unknown revision profile: {revision_profile}")
-    candidate_git_version, candidate_outer_firmware, candidate_semantic_version = (
-        revision_profiles[revision_profile]
-    )
+    (
+        candidate_git_version,
+        candidate_outer_firmware,
+        candidate_semantic_version,
+        activation_marker,
+    ) = revision_profiles[revision_profile]
+    if block_hid_mouse_reports and revision_profile != "imu-touch-v9":
+        raise ValueError("HID mouse report blocking requires the imu-touch-v9 profile")
     if patch_validation["remaining"] < 0:
         raise ValueError("patch does not fit the conservative zero-run candidate")
 
@@ -200,7 +226,7 @@ def build_candidate(
         marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
         if stock[marker_offset : marker_offset + 2] != DEFAULT_STATUS_ORIGINAL:
             raise ValueError("stock A1 default-status bytes do not match")
-        load_image_bytes[marker_offset : marker_offset + 2] = DEFAULT_STATUS_MARKER
+        load_image_bytes[marker_offset : marker_offset + 2] = activation_marker
     touch_indicator_offset = address_to_file_offset(
         TOUCH_INDICATOR_REPEAT_ADDRESS, len(stock)
     )
@@ -224,6 +250,14 @@ def build_candidate(
             touch_indicator_offset : touch_indicator_offset
             + len(TOUCH_INDICATOR_REPEAT_ORIGINAL)
         ] = bytes((touch_indicator_repeat, 0x23))  # movs r3, #imm8
+    if block_hid_mouse_reports:
+        for address, original, replacement in HID_MOUSE_REPORT_FUNCTIONS:
+            offset = address_to_file_offset(address, len(stock))
+            if stock[offset : offset + len(original)] != original:
+                raise ValueError(
+                    f"stock HID mouse helper bytes do not match at 0x{address:08X}"
+                )
+            load_image_bytes[offset : offset + len(replacement)] = replacement
     payload = load_image_bytes[HEADER_SIZE:]
     struct.pack_into("<I", load_image_bytes, 12, sum(payload) & 0xFFFFFFFF)
 
@@ -257,6 +291,10 @@ def build_candidate(
                 touch_indicator_offset + len(TOUCH_INDICATOR_REPEAT_ORIGINAL),
             )
         )
+    if block_hid_mouse_reports:
+        for address, _original, replacement in HID_MOUSE_REPORT_FUNCTIONS:
+            offset = address_to_file_offset(address, len(stock))
+            allowed_offsets.update(range(offset, offset + len(replacement)))
     unexpected_offsets = changed_offsets - allowed_offsets
     if unexpected_offsets:
         first = min(unexpected_offsets)
@@ -324,7 +362,7 @@ def build_candidate(
                     "address": DEFAULT_STATUS_ADDRESS,
                     "length": 2,
                     "before": DEFAULT_STATUS_ORIGINAL.hex(" "),
-                    "after": DEFAULT_STATUS_MARKER.hex(" "),
+                    "after": activation_marker.hex(" "),
                 }
             ]
             if add_activation_marker
@@ -342,6 +380,21 @@ def build_candidate(
                 }
             ]
             if touch_indicator_repeat is not None
+            else []
+        )
+        + (
+            [
+                {
+                    "kind": "hid_mouse_report_block",
+                    "file_offset": address_to_file_offset(address, len(stock)),
+                    "address": address,
+                    "length": len(replacement),
+                    "before": original.hex(" "),
+                    "after": replacement.hex(" "),
+                }
+                for address, original, replacement in HID_MOUSE_REPORT_FUNCTIONS
+            ]
+            if block_hid_mouse_reports
             else []
         ),
         "unplanned_differences": 0,
@@ -366,8 +419,18 @@ def build_candidate(
         },
         "activation_marker": {
             "enabled": add_activation_marker,
-            "unknown_a1_status": "0xFD" if add_activation_marker else "0xFF",
+            "unknown_a1_status": (
+                f"0x{activation_marker[0]:02X}" if add_activation_marker else "0xFF"
+            ),
             "custom_hook_status": "0xFE",
+        },
+        "hid_mouse_reports": {
+            "blocked": block_hid_mouse_reports,
+            "attribute_index": 4,
+            "function_entries": [
+                f"0x{address:08X}" for address, _, _ in HID_MOUSE_REPORT_FUNCTIONS
+            ],
+            "keyboard_attribute_index_0x18_untouched": True,
         },
         "touch_indicator": {
             "command": "0x50 0x55 0xAA",
@@ -418,8 +481,13 @@ def main() -> int:
         help="reduce the confirmed touch-area 0x50 indicator from 25 repeats to 1..10",
     )
     parser.add_argument(
+        "--block-hid-mouse-reports",
+        action="store_true",
+        help="replace only the three reviewed HID mouse-report helpers with BX LR",
+    )
+    parser.add_argument(
         "--revision-profile",
-        choices=("imu-v7", "imu-touch-v8"),
+        choices=("imu-v7", "imu-touch-v8", "imu-touch-v9"),
         default="imu-v7",
         help="version markers used when revision bump flags are enabled",
     )
@@ -432,6 +500,7 @@ def main() -> int:
         bump_outer_revision=args.bump_outer_revision,
         add_activation_marker=args.activation_marker,
         touch_indicator_repeat=args.touch_indicator_repeat,
+        block_hid_mouse_reports=args.block_hid_mouse_reports,
         revision_profile=args.revision_profile,
     )
     if args.output:

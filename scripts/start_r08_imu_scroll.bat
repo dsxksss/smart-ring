@@ -16,9 +16,10 @@ if errorlevel 1 (
 )
 
 echo Close the phone ring app and turn off phone Bluetooth first.
-echo IMU listens in standby without scrolling. Knock the ring twice, 0.2-0.8 seconds apart, to wake control for one minute.
+echo v9 uses the capacitive touch area for double-tap wake and blocks mouse reports in firmware.
+echo Older firmware falls back to host IMU double-knock detection.
 echo After IMU_CONTROL_AWAKE, keep the ring still for one second, then rotate it to scroll.
-echo Existing GATT tap notifications, if emitted by the ring, still map double-tap to copy and triple-tap to paste.
+echo While awake, touch double-tap copies and triple-tap pastes.
 echo Press Enter or Ctrl+C to stop safely.
 echo.
 set "RUST_LOG=info"

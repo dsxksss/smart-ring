@@ -5,7 +5,7 @@ use clap::Parser;
 use r08::sacrificial_dfu::{self, ACK_PHRASE, EXPECTED_SHA256};
 
 #[derive(Debug, Parser)]
-#[command(about = "One-device, hash-locked sacrificial R08 v8 DFU")]
+#[command(about = "One-device, hash-locked sacrificial R08 v9 DFU")]
 struct Args {
     #[arg(long, conflicts_with_all = ["dry_run", "execute_sacrificial_test", "activation_probe"])]
     probe: bool,

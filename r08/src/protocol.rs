@@ -20,6 +20,8 @@ pub const IMU_STREAM_FLAG_ENDING: u8 = 1 << 3;
 // without new data while still stopping well before the firmware's 12 s limit.
 pub const IMU_STREAM_NO_DATA_TIMEOUT_MS: u64 = 750;
 pub const IMU_STREAM_COMMAND: u8 = 0x09;
+pub const FIRMWARE_CAPABILITY_PROBE_COMMAND: u8 = 0x0A;
+pub const IMU_TOUCH_V9_CAPABILITY_STATUS: u8 = 0xFC;
 
 pub const NORDIC_UART_SERVICE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6e40fff0_b5a3_f393_e0a9_e50e24dcca9e);
@@ -160,6 +162,30 @@ pub fn imu_stream_start_packet() -> [u8; COLMI_PACKET_LEN] {
 /// watchdog, but the host always sends this on normal and error exits.
 pub fn imu_stream_stop_packet() -> [u8; COLMI_PACKET_LEN] {
     build_colmi_packet(&[0xA1, IMU_STREAM_COMMAND, 0x00]).expect("imu stream stop")
+}
+
+/// Query the independent A1 status marker embedded in reviewed custom builds.
+///
+/// Stock replies 0xFF, v7/v8 reply 0xFD, and the HID-mouse-blocked v9 build
+/// replies 0xFC.  This command does not start a sensor or change touch state.
+pub fn firmware_capability_probe_packet() -> [u8; COLMI_PACKET_LEN] {
+    build_colmi_packet(&[0xA1, FIRMWARE_CAPABILITY_PROBE_COMMAND, 0x00])
+        .expect("firmware capability probe")
+}
+
+pub fn decode_firmware_capability_status(packet: &[u8]) -> Option<u8> {
+    if packet.len() != COLMI_PACKET_LEN
+        || packet[0] != 0xA1
+        || !matches!(packet[1], 0xFC..=0xFF)
+        || !checksum_ok(packet)
+    {
+        return None;
+    }
+    Some(packet[1])
+}
+
+pub fn is_imu_touch_v9_capability(packet: &[u8]) -> bool {
+    decode_firmware_capability_status(packet) == Some(IMU_TOUCH_V9_CAPABILITY_STATUS)
 }
 
 pub fn is_dfu_uuid(uuid: uuid::Uuid) -> bool {
@@ -476,6 +502,29 @@ mod tests {
                 .to_ascii_lowercase(),
             "3b01000000000000000000000000003c"
         );
+    }
+
+    #[test]
+    fn identifies_only_the_checksum_valid_v9_capability_marker() {
+        assert_eq!(
+            format_packet(&firmware_capability_probe_packet()),
+            "A1 0A 00 00 00 00 00 00 00 00 00 00 00 00 00 AB"
+        );
+        let v9 = build_colmi_packet(&[0xA1, IMU_TOUCH_V9_CAPABILITY_STATUS]).unwrap();
+        assert_eq!(
+            decode_firmware_capability_status(&v9),
+            Some(IMU_TOUCH_V9_CAPABILITY_STATUS)
+        );
+        assert!(is_imu_touch_v9_capability(&v9));
+
+        let v8 = build_colmi_packet(&[0xA1, 0xFD]).unwrap();
+        assert_eq!(decode_firmware_capability_status(&v8), Some(0xFD));
+        assert!(!is_imu_touch_v9_capability(&v8));
+
+        let mut corrupted = v9;
+        corrupted[15] ^= 1;
+        assert_eq!(decode_firmware_capability_status(&corrupted), None);
+        assert!(!is_imu_touch_v9_capability(&corrupted));
     }
 
     #[test]

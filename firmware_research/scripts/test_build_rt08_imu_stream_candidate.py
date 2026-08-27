@@ -15,12 +15,16 @@ from build_rt08_imu_stream_candidate import (
     EXPECTED_STOCK_GIT_VERSION,
     HOOK_ADDRESS,
     HOOK_ORIGINAL,
+    HID_MOUSE_REPORT_FUNCTIONS,
     INNER_SHA256_OFFSET,
     INNER_GIT_VERSION_OFFSET,
     TOUCH_INDICATOR_REPEAT_ADDRESS,
     TOUCH_INDICATOR_REPEAT_ORIGINAL,
     TOUCH_V8_GIT_VERSION,
     TOUCH_V8_OUTER_FIRMWARE,
+    TOUCH_V9_GIT_VERSION,
+    TOUCH_V9_OUTER_FIRMWARE,
+    TOUCH_V9_STATUS_MARKER,
     build_candidate,
     validate_patch_binary,
 )
@@ -45,6 +49,9 @@ def candidate_fixture() -> bytes:
     data[
         touch_offset : touch_offset + len(TOUCH_INDICATOR_REPEAT_ORIGINAL)
     ] = TOUCH_INDICATOR_REPEAT_ORIGINAL
+    for address, original, _replacement in HID_MOUSE_REPORT_FUNCTIONS:
+        offset = address_to_file_offset(address, len(data))
+        data[offset : offset + len(original)] = original
     struct.pack_into("<I", data, 12, sum(data[HEADER_SIZE:]) & 0xFFFFFFFF)
     return bytes(data)
 
@@ -156,6 +163,62 @@ class ImuStreamCandidateBuilderTests(unittest.TestCase):
         self.assertEqual(report["internal_version"]["candidate_semantic"], "1.4.7")
         self.assertEqual(report["internal_version"]["profile"], "imu-touch-v8")
         self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_touch_v9_blocks_only_reviewed_hid_mouse_report_helpers(self) -> None:
+        stock = bytearray(candidate_fixture())
+        struct.pack_into("<I", stock, INNER_GIT_VERSION_OFFSET, EXPECTED_STOCK_GIT_VERSION)
+        stock[0x10 : 0x10 + len(TOUCH_V9_OUTER_FIRMWARE)] = b"RT08_3.10.48_260309"
+        marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
+        stock[marker_offset : marker_offset + 2] = bytes.fromhex("ff 21")
+        struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)
+
+        candidate, report = build_candidate(
+            bytes(stock),
+            bytes(range(32)),
+            enforce_stock_hash=False,
+            validate_patch=False,
+            bump_internal_revision=True,
+            bump_outer_revision=True,
+            add_activation_marker=True,
+            touch_indicator_repeat=3,
+            block_hid_mouse_reports=True,
+            revision_profile="imu-touch-v9",
+        )
+
+        self.assertEqual(
+            struct.unpack_from("<I", candidate, INNER_GIT_VERSION_OFFSET)[0],
+            TOUCH_V9_GIT_VERSION,
+        )
+        self.assertEqual(
+            candidate[0x10 : 0x10 + len(TOUCH_V9_OUTER_FIRMWARE)],
+            TOUCH_V9_OUTER_FIRMWARE,
+        )
+        self.assertEqual(
+            candidate[marker_offset : marker_offset + 2], TOUCH_V9_STATUS_MARKER
+        )
+        for address, _original, replacement in HID_MOUSE_REPORT_FUNCTIONS:
+            offset = address_to_file_offset(address, len(candidate))
+            self.assertEqual(
+                candidate[offset : offset + len(replacement)], replacement
+            )
+        self.assertEqual(report["internal_version"]["candidate_semantic"], "1.4.8")
+        self.assertEqual(report["activation_marker"]["unknown_a1_status"], "0xFC")
+        self.assertTrue(report["hid_mouse_reports"]["blocked"])
+        self.assertTrue(
+            report["hid_mouse_reports"]["keyboard_attribute_index_0x18_untouched"]
+        )
+        self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_hid_mouse_block_requires_v9_profile(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires the imu-touch-v9"):
+            build_candidate(
+                candidate_fixture(),
+                bytes(range(32)),
+                enforce_stock_hash=False,
+                validate_patch=False,
+                block_hid_mouse_reports=True,
+                revision_profile="imu-touch-v8",
+            )
 
     def test_rejects_touch_indicator_repeat_outside_reviewed_range(self) -> None:
         with self.assertRaisesRegex(ValueError, "between 1 and 10"):

@@ -88,6 +88,7 @@ pub struct MappingEngine {
     last_hid_vertical_ms: Option<u64>,
     awake_until_ms: Option<u64>,
     last_wake_ms: Option<u64>,
+    wake_tap_candidate_ms: Option<u64>,
 }
 
 impl MappingEngine {
@@ -107,6 +108,7 @@ impl MappingEngine {
             last_hid_vertical_ms: None,
             awake_until_ms: None,
             last_wake_ms: None,
+            wake_tap_candidate_ms: None,
         }
     }
 
@@ -139,6 +141,7 @@ impl MappingEngine {
         self.ring_button_down = false;
         self.ring_gesture_moved = false;
         self.last_hid_vertical_ms = None;
+        self.wake_tap_candidate_ms = None;
     }
 
     pub fn handle(&mut self, event: InputEvent, now_ms: u64) -> Vec<Output> {
@@ -208,6 +211,10 @@ impl MappingEngine {
             return;
         }
         if self.config.require_double_tap_wake && !self.wake_window_open(now_ms) {
+            if data[1] == 1 {
+                self.record_touch_wake_tap(now_ms, out);
+                return;
+            }
             out.push(Output::Log(
                 "ACTION 控制仍在待机；请先双击戒指唤醒".to_string(),
             ));
@@ -365,6 +372,31 @@ impl MappingEngine {
         self.last_tap_ms = Some(now_ms);
         self.tap_count += 1;
         self.tap_deadline_ms = Some(now_ms.saturating_add(R08_TAP_FLUSH_MS));
+    }
+
+    fn record_touch_wake_tap(&mut self, now_ms: u64, out: &mut Vec<Output>) {
+        let Some(first_ms) = self.wake_tap_candidate_ms else {
+            self.wake_tap_candidate_ms = Some(now_ms);
+            out.push(Output::Log(
+                "ACTION 已记录第一次触控点击；等待第二次点击唤醒".to_string(),
+            ));
+            return;
+        };
+        let interval_ms = now_ms.saturating_sub(first_ms);
+        if interval_ms < R08_TAP_DEBOUNCE_MS {
+            return;
+        }
+        if interval_ms <= R08_TAP_FLUSH_MS {
+            self.open_wake_window(now_ms, out);
+            out.push(Output::Log(format!(
+                "ACTION 电容触控双击已确认，间隔 {interval_ms} ms"
+            )));
+            return;
+        }
+        self.wake_tap_candidate_ms = Some(now_ms);
+        out.push(Output::Log(
+            "ACTION 前一次触控点击已超时；重新记录第一次点击".to_string(),
+        ));
     }
 
     fn flush_due_taps(&mut self, now_ms: u64, out: &mut Vec<Output>) {
@@ -834,6 +866,50 @@ mod tests {
         let copy = engine.tick(1_750 + R08_TAP_FLUSH_MS);
         assert!(copy.contains(&Output::Copy), "{copy:?}");
         assert!(!engine.control_awake(61_751));
+    }
+
+    #[test]
+    fn two_real_gatt_touch_taps_wake_but_one_tap_does_not() {
+        let mut engine = MappingEngine::new(MappingConfig {
+            scroll_gain: 4,
+            inject: true,
+            require_double_tap_wake: true,
+        });
+
+        let first = engine.handle(gatt_action(1), 100);
+        assert!(!engine.control_awake(100));
+        assert!(first
+            .iter()
+            .any(|item| matches!(item, Output::Log(text) if text.contains("第一次触控点击"))));
+
+        let second = engine.handle(gatt_action(1), 360);
+        assert!(engine.control_awake(360));
+        assert!(second
+            .iter()
+            .any(|item| matches!(item, Output::Log(text) if text.contains("电容触控双击已确认"))));
+        assert!(!second
+            .iter()
+            .any(|item| matches!(item, Output::Copy | Output::Paste)));
+
+        engine.handle(gatt_action(1), 1_500);
+        engine.handle(gatt_action(1), 1_750);
+        let copy = engine.tick(1_750 + R08_TAP_FLUSH_MS);
+        assert!(copy.contains(&Output::Copy), "{copy:?}");
+    }
+
+    #[test]
+    fn expired_touch_wake_candidate_restarts_without_waking() {
+        let mut engine = MappingEngine::new(MappingConfig {
+            scroll_gain: 4,
+            inject: true,
+            require_double_tap_wake: true,
+        });
+        engine.handle(gatt_action(1), 100);
+        let output = engine.handle(gatt_action(1), 100 + R08_TAP_FLUSH_MS + 1);
+        assert!(!engine.control_awake(100 + R08_TAP_FLUSH_MS + 1));
+        assert!(output
+            .iter()
+            .any(|item| matches!(item, Output::Log(text) if text.contains("重新记录第一次点击"))));
     }
 
     #[test]
