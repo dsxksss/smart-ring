@@ -9,7 +9,7 @@ use r08::identity::RING_NAME;
 use r08::imu_scroll::{self, ImuStreamOptions, ImuWheelConfig, RotationPlane};
 use r08::ota::{self, OtaFetchOptions, OtaRegion};
 use r08::platform;
-use r08::protocol::{parse_hex_payload, reject_if_dfu, NORDIC_UART_WRITE};
+use r08::protocol::{find_device_packet, parse_hex_payload, reject_if_dfu, NORDIC_UART_WRITE};
 use r08::sensor::{self, SensorRecordOptions};
 use r08::session::{self, SessionOptions};
 use tracing_subscriber::fmt::MakeWriter;
@@ -27,6 +27,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Verify a bidirectional GATT connection without enabling sensors or input control.
+    ConnectCheck,
     /// Open the advanced numeric diagnostic menu.
     #[command(alias = "shell")]
     Interactive {
@@ -66,6 +68,9 @@ enum Command {
         /// Actually inject wheel events. Omit for listen/calibration-only mode.
         #[arg(long)]
         inject: bool,
+        /// Keep the v7 IMU stream in standby and require two distinct knocks before enabling control for one minute.
+        #[arg(long)]
+        double_tap_wake: bool,
         #[arg(long, default_value_t = 60)]
         seconds: u64,
         /// Gravity rotation plane: xy, xz, or yz.
@@ -136,6 +141,8 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         sleep_minutes: u8,
     },
+    /// Send one official 0x50 touch-area indicator request and exit.
+    TouchIndicatorTest,
 }
 
 #[tokio::main]
@@ -144,10 +151,35 @@ async fn main() -> Result<()> {
     let command = cli.command.unwrap_or_else(default_command);
     let logging = matches!(
         &command,
-        Command::Control { .. } | Command::Interactive { .. } | Command::ImuStream { .. }
+        Command::ConnectCheck
+            | Command::Control { .. }
+            | Command::Interactive { .. }
+            | Command::ImuStream { .. }
     );
     init_tracing(logging)?;
     match command {
+        Command::ConnectCheck => {
+            println!("正在建立最小稳定连接：不会启动提示灯、心率/血氧灯、滚轮、IMU 或触控映射。");
+            let connection = ble::connect(30).await?;
+            let result = connection.verify_uart_round_trip().await;
+            let disconnect_result = connection.disconnect().await;
+            let battery_percent = result?;
+            disconnect_result?;
+            println!("CONNECT_STABLE GATT 双向收发验证成功，电量={battery_percent}%");
+            println!("TOUCH_INDICATOR_SKIPPED 原厂 50 55 AA 是约 20 次的查找设备长闪烁，默认连接检查不再发送");
+            Ok(())
+        }
+        Command::TouchIndicatorTest => {
+            println!(
+                "正在发送一次已知的 50 55 AA 触控区提示命令；不会启动心率/血氧灯、IMU 或输入注入。"
+            );
+            let connection = ble::connect(30).await?;
+            connection.write(&find_device_packet()).await?;
+            println!("TOUCH_INDICATOR_SENT 请观察触控区域；v8 候选应闪烁约 3 次");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            connection.disconnect().await?;
+            Ok(())
+        }
         Command::Interactive {
             touch_type,
             sleep_minutes,
@@ -225,6 +257,7 @@ async fn main() -> Result<()> {
         Command::ImuStream {
             acknowledge_unverified_candidate,
             inject,
+            double_tap_wake,
             seconds,
             plane,
             invert,
@@ -246,13 +279,18 @@ async fn main() -> Result<()> {
             }
             .validate()?;
             println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
-            println!("该命令不会刷写固件；将发送候选 A1 09 启停命令，任何异常均急停。按 Enter 或 Ctrl+C 退出。");
+            if double_tap_wake {
+                println!("组合模式不会刷写固件，也不会发送会切断 GATT 的 3B 触控命令；待机 IMU 只检测双敲，确认两次后开启 60 秒转动滚动。");
+            } else {
+                println!("该命令不会刷写固件；将发送候选 A1 09 启停命令，任何异常均急停。按 Enter 或 Ctrl+C 退出。");
+            }
             let connection = ble::connect(30).await?;
             imu_scroll::run(
                 connection,
                 ImuStreamOptions {
                     seconds,
                     inject,
+                    double_tap_wake,
                     config,
                 },
             )
@@ -349,12 +387,7 @@ async fn main() -> Result<()> {
 }
 
 fn default_command() -> Command {
-    Command::Control {
-        seconds: 0,
-        touch_type: 2,
-        sleep_minutes: 1,
-        scroll_gain: 4,
-    }
+    Command::ConnectCheck
 }
 
 async fn self_check() -> Result<()> {
@@ -444,23 +477,55 @@ impl<'a> MakeWriter<'a> for TeeWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_command, Command};
+    use clap::Parser;
+
+    use super::{default_command, Cli, Command};
 
     #[test]
-    fn default_command_starts_double_tap_wake_control() {
-        match default_command() {
-            Command::Control {
+    fn default_command_only_checks_connection() {
+        assert!(matches!(default_command(), Command::ConnectCheck));
+    }
+
+    #[test]
+    fn connect_check_subcommand_is_available() {
+        let cli = Cli::try_parse_from(["r08", "connect-check"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::ConnectCheck)));
+    }
+
+    #[test]
+    fn imu_stream_accepts_double_tap_wake_launcher_flags() {
+        let cli = Cli::try_parse_from([
+            "r08",
+            "imu-stream",
+            "--acknowledge-unverified-candidate",
+            "--inject",
+            "--double-tap-wake",
+            "--seconds",
+            "0",
+            "--gain",
+            "0.2",
+            "--full-speed",
+            "60",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Command::ImuStream {
+                acknowledge_unverified_candidate,
+                inject,
+                double_tap_wake,
                 seconds,
-                touch_type,
-                sleep_minutes,
-                scroll_gain,
+                gain,
+                full_speed,
+                ..
             } => {
+                assert!(acknowledge_unverified_candidate);
+                assert!(inject);
+                assert!(double_tap_wake);
                 assert_eq!(seconds, 0);
-                assert_eq!(touch_type, 2);
-                assert_eq!(sleep_minutes, 1);
-                assert_eq!(scroll_gain, 4);
+                assert_eq!(gain, 0.2);
+                assert_eq!(full_speed, 60.0);
             }
-            _ => panic!("default command must start control directly"),
+            _ => panic!("launcher flags must select imu-stream"),
         }
     }
 }

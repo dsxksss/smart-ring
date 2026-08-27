@@ -14,7 +14,11 @@ pub const IMU_STREAM_FLAG_VALID: u8 = 1 << 0;
 pub const IMU_STREAM_FLAG_STALE: u8 = 1 << 1;
 pub const IMU_STREAM_FLAG_FIFO_OVERFLOW: u8 = 1 << 2;
 pub const IMU_STREAM_FLAG_ENDING: u8 = 1 << 3;
-pub const IMU_STREAM_NO_DATA_TIMEOUT_MS: u64 = 250;
+// The v7 stream is nominally 10 Hz, but the Windows WinRT BLE path has shown
+// isolated notification gaps longer than 250 ms. Wheel output is sample-driven
+// (there is no host-side inertia), so waiting 750 ms cannot continue scrolling
+// without new data while still stopping well before the firmware's 12 s limit.
+pub const IMU_STREAM_NO_DATA_TIMEOUT_MS: u64 = 750;
 pub const IMU_STREAM_COMMAND: u8 = 0x09;
 
 pub const NORDIC_UART_SERVICE: uuid::Uuid =
@@ -123,6 +127,27 @@ pub fn raw_sensor_stop_packet() -> [u8; COLMI_PACKET_LEN] {
 
 pub fn raw_sensor_start_packet() -> [u8; COLMI_PACKET_LEN] {
     build_colmi_packet(&[0xA1, 0x04, 0x04]).expect("raw start")
+}
+
+pub fn uart_battery_query_packet() -> [u8; COLMI_PACKET_LEN] {
+    build_colmi_packet(&[0x03]).expect("battery query")
+}
+
+/// Official QRing "find device" request used by the stock app.
+///
+/// This is deliberately separate from the A1 optical sensor commands. On the
+/// RT08_V3.1 stock firmware, command 0x50 has its own indicator-sequence
+/// handler. The target ring visibly runs this sequence on the expected touch
+/// indicator, with more than five flashes from one request.
+pub fn find_device_packet() -> [u8; COLMI_PACKET_LEN] {
+    build_colmi_packet(&[0x50, 0x55, 0xAA]).expect("find device")
+}
+
+pub fn decode_uart_battery_response(packet: &[u8]) -> Option<u8> {
+    if packet.len() != COLMI_PACKET_LEN || packet[0] & 0x7F != 0x03 || packet[1] > 100 {
+        return None;
+    }
+    checksum_ok(packet).then_some(packet[1])
 }
 
 /// Start the experimental IMU-only stream implemented by the offline R08
@@ -345,7 +370,7 @@ pub fn describe_colmi_packet(data: &[u8]) -> String {
             }
         }
         0xAA if data[1] == 0xEE => "设备返回 AA EE（上一条命令未识别或不受支持）".to_string(),
-        0x02 if data[1] == 0x02 => "R08 双击/相机兼容事件".to_string(),
+        0x02 if data[1] == 0x02 => "R08 摇动/相机兼容事件（可由 IMU 产生）".to_string(),
         0x1D => {
             let label = match data[1] {
                 1 => "点击/播放暂停",
@@ -481,6 +506,16 @@ mod tests {
     }
 
     #[test]
+    fn builds_official_find_device_packet_without_optical_command() {
+        let packet = find_device_packet();
+        assert_eq!(
+            format_packet(&packet),
+            "50 55 AA 00 00 00 00 00 00 00 00 00 00 00 00 4F"
+        );
+        assert_ne!(&packet[..3], &[0xA1, 0x04, 0x04]);
+    }
+
+    #[test]
     fn describes_unsupported_command_response() {
         let packet = parse_hex_payload("aaee0000000000000000000000000098").unwrap();
         assert!(describe_colmi_packet(&packet).contains("未识别或不受支持"));
@@ -489,7 +524,7 @@ mod tests {
     #[test]
     fn describes_observed_remote_event() {
         let packet = parse_hex_payload("02020000000000000000000000000004").unwrap();
-        assert!(describe_colmi_packet(&packet).contains("R08 双击/相机兼容事件"));
+        assert!(describe_colmi_packet(&packet).contains("可由 IMU 产生"));
     }
 
     #[test]
@@ -668,13 +703,13 @@ mod tests {
     }
 
     #[test]
-    fn imu_stream_tracker_stops_after_250ms_without_data() {
+    fn imu_stream_tracker_stops_after_750ms_without_data() {
         let mut tracker = ImuStreamTracker::default();
         tracker.start(1_000);
         assert!(tracker.is_active());
-        assert_eq!(tracker.check_timeout(1_249), None);
+        assert_eq!(tracker.check_timeout(1_749), None);
         assert_eq!(
-            tracker.check_timeout(1_250),
+            tracker.check_timeout(1_750),
             Some(ImuStreamStopReason::NoDataTimeout)
         );
         assert!(!tracker.is_active());
@@ -690,11 +725,11 @@ mod tests {
             tracker.ingest(&first, 1_200),
             ImuStreamEvaluation::Sample(_)
         ));
-        assert_eq!(tracker.check_timeout(1_449), None);
+        assert_eq!(tracker.check_timeout(1_949), None);
 
         let gap = imu_stream_packet(11, IMU_STREAM_FLAG_VALID, sample);
         assert_eq!(
-            tracker.ingest(&gap, 1_450),
+            tracker.ingest(&gap, 1_950),
             ImuStreamEvaluation::Stop(ImuStreamStopReason::SequenceGap {
                 expected: 10,
                 received: 11,

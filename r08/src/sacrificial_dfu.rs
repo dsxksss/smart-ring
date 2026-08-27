@@ -13,18 +13,19 @@ use crate::protocol::{
 };
 
 pub const EXPECTED_SHA256: &str =
-    "575d500b385f61b6cc1cf8eb9d1a55b68da4ff49a0be32800f8f91f2d8a1ff2a";
+    "4b44c8a82f227e6697e7c5dc2633db5ed478f69ca28684b19d7fb17920d08441";
 pub const EXPECTED_SIZE: usize = 146_812;
 pub const ACK_PHRASE: &str = "I_ACCEPT_PERMANENT_BRICK";
 const HEADER_SIZE: usize = 0x50;
 const INNER_HEADER_SIZE: usize = 0x400;
 const APPLICATION_BASE: u32 = 0x0082_6000;
-const OUTER_FIRMWARE: &[u8] = b"RT08_3.10.51_260827";
+const OUTER_FIRMWARE: &[u8] = b"RT08_3.10.52_260827";
 const DEFAULT_STATUS_ADDRESS: u32 = 0x0082_80CA;
+const TOUCH_REPEAT_ADDRESS: u32 = 0x0082_C604;
 const SDK_IMAGE_DIGEST_OFFSET: usize = HEADER_SIZE + 0x174;
 const SDK_IMAGE_DIGEST: &[u8] = &[
-    0x0a, 0x4b, 0x55, 0xc5, 0xf9, 0xc7, 0x4d, 0x02, 0xad, 0xb0, 0xcf, 0xb4, 0xaa, 0xbc, 0x1d, 0x6c,
-    0xcd, 0x5a, 0xf5, 0x52, 0x38, 0xfc, 0xd4, 0x44, 0x3a, 0x70, 0xee, 0x7a, 0x61, 0x01, 0x01, 0x9a,
+    0xd7, 0xae, 0xe1, 0x1d, 0x73, 0xea, 0x53, 0x5d, 0x8d, 0x57, 0x14, 0x0c, 0x0a, 0x75, 0x80, 0xeb,
+    0x54, 0x43, 0xc5, 0x02, 0x86, 0x37, 0x28, 0x8c, 0xed, 0xcb, 0x57, 0x42, 0x54, 0xea, 0x06, 0x5a,
 ];
 
 #[derive(Debug, Clone)]
@@ -130,7 +131,7 @@ fn validate_container(bytes: &[u8]) -> Result<()> {
         bail!("candidate lacks exact RT08_V3.1 marker");
     }
     if &bytes[0x10..0x10 + OUTER_FIRMWARE.len()] != OUTER_FIRMWARE {
-        bail!("candidate outer firmware revision is not the reviewed v7 marker");
+        bail!("candidate outer firmware revision is not the reviewed v8 marker");
     }
     if payload[0] != 12 {
         bail!("candidate is not RTL8762E IC type 12");
@@ -148,8 +149,8 @@ fn validate_container(bytes: &[u8]) -> Result<()> {
     {
         bail!("RTL8762E inner length/base validation failed");
     }
-    if payload_u32(0x60) != 0x0000_6041 {
-        bail!("candidate internal version is not the reviewed 1.4.6 revision");
+    if payload_u32(0x60) != 0x0000_7041 {
+        bail!("candidate internal version is not the reviewed 1.4.7 revision");
     }
     if &bytes[SDK_IMAGE_DIGEST_OFFSET..SDK_IMAGE_DIGEST_OFFSET + SDK_IMAGE_DIGEST.len()]
         != SDK_IMAGE_DIGEST
@@ -159,6 +160,10 @@ fn validate_container(bytes: &[u8]) -> Result<()> {
     let marker_offset = HEADER_SIZE + (DEFAULT_STATUS_ADDRESS - APPLICATION_BASE) as usize;
     if bytes[marker_offset..marker_offset + 2] != [0xfd, 0x21] {
         bail!("candidate lacks the independent A1 activation marker");
+    }
+    let touch_repeat_offset = HEADER_SIZE + (TOUCH_REPEAT_ADDRESS - APPLICATION_BASE) as usize;
+    if bytes[touch_repeat_offset..touch_repeat_offset + 2] != [0x03, 0x23] {
+        bail!("candidate lacks the reviewed three-repeat touch indicator patch");
     }
     Ok(())
 }
@@ -218,11 +223,15 @@ where
 
 #[cfg(windows)]
 pub async fn probe() -> Result<(u8, String, String)> {
+    // The official 0x3B touch-disable command can close the R08's WinRT GATT
+    // object while Windows keeps the exact, MAC-qualified service interfaces
+    // registered.  Use those Win32 interfaces for the isolated DFU transport.
     let connection =
         crate::platform::windows_gatt_win32::WindowsDfuWin32Connection::connect_exact().await?;
     let battery = connection.battery_percent().await?;
-    let hardware = connection.hardware_text().to_owned();
-    let firmware = connection.firmware_text().to_owned();
+    // `connect_exact` already reads and requires these two exact DIS values.
+    let hardware = "RT08_V3.1".to_owned();
+    let firmware = "RT08_3.10.48_260309".to_owned();
     connection.disconnect().await?;
     Ok((battery, hardware, firmware))
 }
@@ -284,6 +293,10 @@ pub async fn execute(candidate: &Candidate) -> Result<()> {
 
 #[cfg(windows)]
 pub async fn probe_activation_marker() -> Result<Vec<u8>> {
+    // After DFU reboot Windows can keep the exact GATT service interfaces
+    // available while its WinRT paired-device query returns E_FAIL.  Use the
+    // same MAC-qualified Win32 transport that passed the post-flash health
+    // check so activation verification does not depend on the stale query.
     let connection =
         crate::platform::windows_gatt_win32::WindowsGattWin32Connection::connect_known().await?;
     let mut notifications = connection.subscribe().await?;

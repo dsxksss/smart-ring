@@ -38,12 +38,18 @@ EXPECTED_STOCK_INNER_SHA256 = bytes.fromhex(
 INNER_GIT_VERSION_OFFSET = HEADER_SIZE + 0x60
 EXPECTED_STOCK_GIT_VERSION = 0x00001041  # 1.4.1 in T_IMAGE_VERSION layout
 BUMPED_GIT_VERSION = 0x00006041  # 1.4.6; newer than the activated v6 probe
+TOUCH_V8_GIT_VERSION = 0x00007041  # 1.4.7; newer than installed IMU v7
 OUTER_FIRMWARE_OFFSET = 0x10
 EXPECTED_OUTER_FIRMWARE = b"RT08_3.10.48_260309"
 BUMPED_OUTER_FIRMWARE = b"RT08_3.10.51_260827"
+TOUCH_V8_OUTER_FIRMWARE = b"RT08_3.10.52_260827"
 DEFAULT_STATUS_ADDRESS = 0x008280CA
 DEFAULT_STATUS_ORIGINAL = bytes.fromhex("ff 21")  # movs r1, #0xff
 DEFAULT_STATUS_MARKER = bytes.fromhex("fd 21")  # movs r1, #0xfd
+TOUCH_INDICATOR_REPEAT_ADDRESS = 0x0082C604
+TOUCH_INDICATOR_REPEAT_ORIGINAL = bytes.fromhex("19 23")  # movs r3, #25
+MIN_TOUCH_INDICATOR_REPEAT = 1
+MAX_TOUCH_INDICATOR_REPEAT = 10
 EXPECTED_LITERAL_WORDS = (
     0x00209CB8,
     0x00209CC8,
@@ -115,6 +121,8 @@ def build_candidate(
     bump_internal_revision: bool = False,
     bump_outer_revision: bool = False,
     add_activation_marker: bool = False,
+    touch_indicator_repeat: int | None = None,
+    revision_profile: str = "imu-v7",
 ) -> tuple[bytes, dict[str, Any]]:
     load_image_bytes = bytearray(stock)
     stock_hash = sha256_hex(stock)
@@ -130,6 +138,19 @@ def build_candidate(
             "size": len(patch),
             "remaining": CAVE_END - CAVE_ADDRESS - len(patch),
         }
+    )
+    revision_profiles = {
+        "imu-v7": (BUMPED_GIT_VERSION, BUMPED_OUTER_FIRMWARE, "1.4.6"),
+        "imu-touch-v8": (
+            TOUCH_V8_GIT_VERSION,
+            TOUCH_V8_OUTER_FIRMWARE,
+            "1.4.7",
+        ),
+    }
+    if revision_profile not in revision_profiles:
+        raise ValueError(f"unknown revision profile: {revision_profile}")
+    candidate_git_version, candidate_outer_firmware, candidate_semantic_version = (
+        revision_profiles[revision_profile]
     )
     if patch_validation["remaining"] < 0:
         raise ValueError("patch does not fit the conservative zero-run candidate")
@@ -163,7 +184,7 @@ def build_candidate(
                 f"unexpected stock internal version 0x{stock_git_version:08x}"
             )
         struct.pack_into(
-            "<I", load_image_bytes, INNER_GIT_VERSION_OFFSET, BUMPED_GIT_VERSION
+            "<I", load_image_bytes, INNER_GIT_VERSION_OFFSET, candidate_git_version
         )
     if bump_outer_revision:
         outer = stock[
@@ -172,13 +193,37 @@ def build_candidate(
         if outer != EXPECTED_OUTER_FIRMWARE:
             raise ValueError(f"unexpected outer firmware marker {outer!r}")
         load_image_bytes[
-            OUTER_FIRMWARE_OFFSET : OUTER_FIRMWARE_OFFSET + len(BUMPED_OUTER_FIRMWARE)
-        ] = BUMPED_OUTER_FIRMWARE
+            OUTER_FIRMWARE_OFFSET : OUTER_FIRMWARE_OFFSET
+            + len(candidate_outer_firmware)
+        ] = candidate_outer_firmware
     if add_activation_marker:
         marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
         if stock[marker_offset : marker_offset + 2] != DEFAULT_STATUS_ORIGINAL:
             raise ValueError("stock A1 default-status bytes do not match")
         load_image_bytes[marker_offset : marker_offset + 2] = DEFAULT_STATUS_MARKER
+    touch_indicator_offset = address_to_file_offset(
+        TOUCH_INDICATOR_REPEAT_ADDRESS, len(stock)
+    )
+    if touch_indicator_repeat is not None:
+        if not (
+            MIN_TOUCH_INDICATOR_REPEAT
+            <= touch_indicator_repeat
+            <= MAX_TOUCH_INDICATOR_REPEAT
+        ):
+            raise ValueError(
+                "touch indicator repeat must be between "
+                f"{MIN_TOUCH_INDICATOR_REPEAT} and {MAX_TOUCH_INDICATOR_REPEAT}"
+            )
+        original_repeat = stock[
+            touch_indicator_offset : touch_indicator_offset
+            + len(TOUCH_INDICATOR_REPEAT_ORIGINAL)
+        ]
+        if original_repeat != TOUCH_INDICATOR_REPEAT_ORIGINAL:
+            raise ValueError("stock touch-indicator repeat instruction does not match")
+        load_image_bytes[
+            touch_indicator_offset : touch_indicator_offset
+            + len(TOUCH_INDICATOR_REPEAT_ORIGINAL)
+        ] = bytes((touch_indicator_repeat, 0x23))  # movs r3, #imm8
     payload = load_image_bytes[HEADER_SIZE:]
     struct.pack_into("<I", load_image_bytes, 12, sum(payload) & 0xFFFFFFFF)
 
@@ -197,11 +242,21 @@ def build_candidate(
         )
     if bump_outer_revision:
         allowed_offsets.update(
-            range(OUTER_FIRMWARE_OFFSET, OUTER_FIRMWARE_OFFSET + len(BUMPED_OUTER_FIRMWARE))
+            range(
+                OUTER_FIRMWARE_OFFSET,
+                OUTER_FIRMWARE_OFFSET + len(candidate_outer_firmware),
+            )
         )
     if add_activation_marker:
         marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
         allowed_offsets.update(range(marker_offset, marker_offset + 2))
+    if touch_indicator_repeat is not None:
+        allowed_offsets.update(
+            range(
+                touch_indicator_offset,
+                touch_indicator_offset + len(TOUCH_INDICATOR_REPEAT_ORIGINAL),
+            )
+        )
     unexpected_offsets = changed_offsets - allowed_offsets
     if unexpected_offsets:
         first = min(unexpected_offsets)
@@ -242,7 +297,7 @@ def build_candidate(
                     "file_offset": INNER_GIT_VERSION_OFFSET,
                     "length": 4,
                     "before": f"0x{stock_git_version:08X}",
-                    "after": f"0x{BUMPED_GIT_VERSION:08X}",
+                    "after": f"0x{candidate_git_version:08X}",
                 }
             ]
             if bump_internal_revision
@@ -253,9 +308,9 @@ def build_candidate(
                 {
                     "kind": "outer_firmware_revision",
                     "file_offset": OUTER_FIRMWARE_OFFSET,
-                    "length": len(BUMPED_OUTER_FIRMWARE),
+                    "length": len(candidate_outer_firmware),
                     "before": EXPECTED_OUTER_FIRMWARE.decode("ascii"),
-                    "after": BUMPED_OUTER_FIRMWARE.decode("ascii"),
+                    "after": candidate_outer_firmware.decode("ascii"),
                 }
             ]
             if bump_outer_revision
@@ -274,27 +329,52 @@ def build_candidate(
             ]
             if add_activation_marker
             else []
+        )
+        + (
+            [
+                {
+                    "kind": "touch_indicator_repeat",
+                    "file_offset": touch_indicator_offset,
+                    "address": TOUCH_INDICATOR_REPEAT_ADDRESS,
+                    "length": len(TOUCH_INDICATOR_REPEAT_ORIGINAL),
+                    "before": TOUCH_INDICATOR_REPEAT_ORIGINAL.hex(" "),
+                    "after": bytes((touch_indicator_repeat, 0x23)).hex(" "),
+                }
+            ]
+            if touch_indicator_repeat is not None
+            else []
         ),
         "unplanned_differences": 0,
         "patch_validation": patch_validation,
         "internal_version": {
             "stock_raw": f"0x{stock_git_version:08X}",
             "candidate_raw": f"0x{struct.unpack_from('<I', candidate, INNER_GIT_VERSION_OFFSET)[0]:08X}",
-            "candidate_semantic": "1.4.6" if bump_internal_revision else "1.4.1",
+            "candidate_semantic": (
+                candidate_semantic_version if bump_internal_revision else "1.4.1"
+            ),
             "bumped_for_bank_selection": bump_internal_revision,
+            "profile": revision_profile,
         },
         "outer_firmware_revision": {
             "candidate": (
-                BUMPED_OUTER_FIRMWARE.decode("ascii")
+                candidate_outer_firmware.decode("ascii")
                 if bump_outer_revision
                 else EXPECTED_OUTER_FIRMWARE.decode("ascii")
             ),
             "bumped": bump_outer_revision,
+            "profile": revision_profile,
         },
         "activation_marker": {
             "enabled": add_activation_marker,
             "unknown_a1_status": "0xFD" if add_activation_marker else "0xFF",
             "custom_hook_status": "0xFE",
+        },
+        "touch_indicator": {
+            "command": "0x50 0x55 0xAA",
+            "stock_repeat": 25,
+            "candidate_repeat": touch_indicator_repeat,
+            "patched": touch_indicator_repeat is not None,
+            "optical_sensor_led_untouched": True,
         },
         "boot_integrity_check_enabled": bool(ctrl_flags & (1 << 9)),
         "stored_inner_sha256_unchanged": True,
@@ -331,6 +411,18 @@ def main() -> int:
     parser.add_argument("--bump-internal-revision", action="store_true")
     parser.add_argument("--bump-outer-revision", action="store_true")
     parser.add_argument("--activation-marker", action="store_true")
+    parser.add_argument(
+        "--touch-indicator-repeat",
+        type=int,
+        metavar="N",
+        help="reduce the confirmed touch-area 0x50 indicator from 25 repeats to 1..10",
+    )
+    parser.add_argument(
+        "--revision-profile",
+        choices=("imu-v7", "imu-touch-v8"),
+        default="imu-v7",
+        help="version markers used when revision bump flags are enabled",
+    )
     args = parser.parse_args()
 
     candidate, report = build_candidate(
@@ -339,6 +431,8 @@ def main() -> int:
         bump_internal_revision=args.bump_internal_revision,
         bump_outer_revision=args.bump_outer_revision,
         add_activation_marker=args.activation_marker,
+        touch_indicator_repeat=args.touch_indicator_repeat,
+        revision_profile=args.revision_profile,
     )
     if args.output:
         if not args.allow_unverified_output:

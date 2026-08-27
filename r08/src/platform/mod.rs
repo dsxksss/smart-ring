@@ -57,6 +57,13 @@ impl PointerSuppression {
         Ok(())
     }
 
+    pub fn suppress_if_present(&mut self) -> anyhow::Result<bool> {
+        #[cfg(windows)]
+        return self.inner.suppress_if_present();
+        #[cfg(not(windows))]
+        Ok(false)
+    }
+
     pub fn restore(&mut self) -> anyhow::Result<()> {
         #[cfg(windows)]
         self.inner.restore()?;

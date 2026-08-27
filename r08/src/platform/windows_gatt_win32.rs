@@ -291,6 +291,7 @@ impl WindowsDfuWin32Connection {
                 && firmware_text != "RT08_3.10.49_260827"
                 && firmware_text != "RT08_3.10.50_260827"
                 && firmware_text != "RT08_3.10.51_260827"
+                && firmware_text != "RT08_3.10.52_260827"
             {
                 bail!("firmware identity mismatch: {firmware_text:?}");
             }

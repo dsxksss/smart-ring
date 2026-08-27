@@ -14,7 +14,8 @@ use uuid::Uuid;
 use crate::identity::RING_MAC;
 use crate::identity::{is_ring_advertisement, RING_NAME};
 use crate::protocol::{
-    format_packet, is_dfu_uuid, reject_if_dfu, DIS_SERVICE, NORDIC_UART_NOTIFY, NORDIC_UART_WRITE,
+    decode_uart_battery_response, format_packet, is_dfu_uuid, reject_if_dfu,
+    uart_battery_query_packet, DIS_SERVICE, NORDIC_UART_NOTIFY, NORDIC_UART_WRITE,
 };
 
 pub struct RingConnection {
@@ -128,37 +129,76 @@ async fn connect_with_options(
             .await
             .context("开始扫描失败")?;
     }
-    let mut matched = None;
-    while tokio::time::Instant::now() < deadline && matched.is_none() {
+    let mut connected_match = None;
+    let mut saw_candidate = false;
+    let mut connect_attempt = 0u32;
+    let mut last_connect_error = None;
+    while tokio::time::Instant::now() < deadline && connected_match.is_none() {
+        let mut attempted_candidate = false;
         for adapter in &adapters {
             for candidate in adapter.peripherals().await.unwrap_or_default() {
                 if let Some((name, address)) = advertisement_identity(&candidate).await {
                     let name_ref = (!name.is_empty()).then_some(name.as_str());
                     if is_ring_advertisement(name_ref, &address) {
-                        matched = Some((candidate, name, address));
+                        saw_candidate = true;
+                        attempted_candidate = true;
+                        connect_attempt += 1;
+                        tracing::info!(attempt = connect_attempt, "连接 {name} ({address})");
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        let attempt_timeout = remaining.min(Duration::from_secs(8));
+                        match timeout(attempt_timeout, candidate.connect()).await {
+                            Ok(Ok(())) => {
+                                connected_match = Some((candidate.clone(), name, address));
+                            }
+                            Ok(Err(error)) => {
+                                last_connect_error =
+                                    Some(anyhow::Error::new(error).context("GATT 连接失败"));
+                            }
+                            Err(error) => {
+                                last_connect_error =
+                                    Some(anyhow::Error::new(error).context("连接超时"));
+                            }
+                        }
+                        if connected_match.is_none() {
+                            let _ = candidate.disconnect().await;
+                            tracing::warn!(
+                                attempt = connect_attempt,
+                                "BLE_CONNECT_RETRY 已丢弃本次失败连接；在总等待期限内继续扫描"
+                            );
+                        }
                         break;
                     }
                 }
             }
-            if matched.is_some() {
+            if attempted_candidate || connected_match.is_some() {
                 break;
             }
         }
-        if matched.is_none() {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+        if connected_match.is_none() {
+            let delay = if attempted_candidate {
+                Duration::from_millis(750)
+            } else {
+                Duration::from_millis(250)
+            };
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            tokio::time::sleep(delay.min(remaining)).await;
         }
     }
     for adapter in &adapters {
         let _ = adapter.stop_scan().await;
     }
-    let Some((peripheral, name, address)) = matched else {
+    let Some((peripheral, name, address)) = connected_match else {
+        if saw_candidate {
+            return Err(last_connect_error
+                .unwrap_or_else(|| anyhow::anyhow!("GATT 连接失败"))
+                .context(format!("在 {scan_seconds} 秒内未能稳定连接 {RING_NAME}")));
+        }
         bail!("没有找到 {RING_NAME}。请关闭手机蓝牙后唤醒戒指再试。");
     };
-    tracing::info!("连接 {name} ({address})");
-    timeout(Duration::from_secs(20), peripheral.connect())
-        .await
-        .context("连接超时")?
-        .context("GATT 连接失败")?;
     peripheral
         .discover_services()
         .await
@@ -244,6 +284,32 @@ impl RingConnection {
         }
     }
 
+    /// Queue a short Nordic UART command without waiting for an ATT write
+    /// response. The IMU stream protocol confirms start/renew through its
+    /// sequenced A2/10 notifications, so waiting for a second acknowledgement
+    /// only adds WinRT stalls and can close an otherwise healthy GATT object.
+    pub async fn write_without_response(&self, packet: &[u8]) -> Result<()> {
+        match &self.backend {
+            RingBackend::Btleplug {
+                peripheral, write, ..
+            } => {
+                reject_if_dfu(write.uuid)?;
+                tracing::info!("TX_NO_RESPONSE  {}", format_packet(packet));
+                peripheral
+                    .write(write, packet, WriteType::WithoutResponse)
+                    .await
+                    .context("GATT 无应答写入失败")?;
+                Ok(())
+            }
+            #[cfg(windows)]
+            RingBackend::WindowsNative(connection) => {
+                connection.write_without_response(packet).await
+            }
+            #[cfg(windows)]
+            RingBackend::WindowsWin32(connection) => connection.write(packet).await,
+        }
+    }
+
     pub async fn read_device_information(&self) -> Result<Vec<(String, String)>> {
         match &self.backend {
             RingBackend::Btleplug { peripheral, .. } => {
@@ -254,6 +320,29 @@ impl RingConnection {
             #[cfg(windows)]
             RingBackend::WindowsWin32(connection) => connection.read_device_information().await,
         }
+    }
+
+    /// Verify a bidirectional application GATT session without enabling any
+    /// sensor, touch, HID, IMU, LED, or DFU function.
+    pub async fn verify_uart_round_trip(&self) -> Result<u8> {
+        let mut notifications = self.subscribe().await.context("稳定连接检查订阅通知失败")?;
+        self.write(&uart_battery_query_packet())
+            .await
+            .context("稳定连接检查发送只读电量查询失败")?;
+        timeout(Duration::from_millis(1_500), async {
+            loop {
+                let packet = notifications
+                    .next()
+                    .await
+                    .context("稳定连接检查等待通知时连接结束")?;
+                if let Some(battery_percent) = decode_uart_battery_response(&packet) {
+                    return Ok::<u8, anyhow::Error>(battery_percent);
+                }
+                tracing::debug!(packet = %format_packet(&packet), "CONNECT_CHECK_IGNORED 忽略非电量通知");
+            }
+        })
+        .await
+        .context("稳定连接检查等待电量应答超时")?
     }
 
     pub async fn disconnect(&self) -> Result<()> {

@@ -1,6 +1,8 @@
 # R08 固件研究
 
-当前状态：v7 IMU 连续流固件已经写入 `R08_9C07 / RT08_V3.1` 并真实激活。本目录只保存我们编写的源码、验证器、测试和研究结论；不保存或分发官方固件、SDK、APK、反编译目录及候选二进制。
+当前状态：v8 IMU 与触控区短提示固件已经写入 `R08_9C07 / RT08_V3.1` 并真实激活。本目录只保存我们编写的源码、验证器、测试和研究结论；不保存或分发官方固件、SDK、APK、反编译目录及候选二进制。
+
+v8 在 v7 基础上加入触控区提示灯短序列：原厂 `0x50 55 AA` 的重复计数从 25 改为 3，并预留 `1..10` 的构建参数。哈希锁定的官方 SDK 已完成内层摘要重算，finalized SHA-256 为 `4b44c8a82f227e6697e7c5dc2633db5ed478f69ca28684b19d7fb17920d08441`。2026-08-27 对该精确哈希的真机刷写成功，刷后有效 `A2 10 sequence=0` 和触控区域准确闪烁 3 次均已确认。设计和精简边界见 `RT08_CUSTOM_FIRMWARE_V8_20260827.md`。
 
 ## 精确身份与哈希
 
@@ -63,6 +65,17 @@ Device Information 仍显示原厂固件字符串，因为 v7 没有修改该应
      --allow-unverified-output --output path\to\v7-prefinal.bin
    ```
 
+   定制 v8 额外使用：
+
+   ```powershell
+   python firmware_research\scripts\build_rt08_imu_stream_candidate.py `
+     path\to\RT08_3.10.48_260309.bin `
+     firmware_research\patches\r08_imu_stream\build\r08_imu_stream.bin `
+     --bump-internal-revision --bump-outer-revision --activation-marker `
+     --touch-indicator-repeat 3 --revision-profile imu-touch-v8 `
+     --allow-unverified-output --output path\to\v8-prefinal.bin
+   ```
+
 4. 用哈希锁定的官方工具重算内层摘要：
 
    ```powershell
@@ -71,13 +84,24 @@ Device Information 仍显示原厂固件字符串，因为 v7 没有修改该应
      --profile imu-v7 --allow-unverified-output --output path\to\v7-final.bin
    ```
 
+   v8 使用 `--profile imu-touch-v8`，其 pre-final、SDK、工具、内层摘要和 finalized 输出哈希均已锁定：
+
+   ```powershell
+   python firmware_research\scripts\finalize_rt08_candidate_with_official_sdk.py `
+     path\to\v8-prefinal.bin --sdk path\to\RTL8762E_SDK_v1.5.0.zip `
+     --profile imu-touch-v8 --allow-unverified-output `
+     --output path\to\v8-final.NON_FLASHABLE.bin
+   ```
+
 5. 最终文件必须精确得到 v7 SHA-256；任何差异都视为新候选，需要重新审计和授权。
 
 `T_IMG_HEADER_FORMAT.sha256[32]` 位于内层头偏移 `0x174`。早期把 `0x394`/全零当作摘要字段的结论已经废弃；v4/v5 未激活正是因为没有重算真实字段。
 
 ## DFU 入口
 
-仓库只保留一个写入实现：`r08_sacrificial_dfu`。它被锁定到目标设备身份、v7 大小、外层版本、内部版本、激活标记、SDK 摘要和最终 SHA-256。
+仓库只保留一个写入实现：`r08_sacrificial_dfu`。它现在被锁定到目标设备身份，以及 v8 的大小、外层版本 `RT08_3.10.52_260827`、内部版本 `1.4.7`、激活标记、触控灯三次重复指令、SDK 摘要和最终 SHA-256 `4b44c8a82f227e6697e7c5dc2633db5ed478f69ca28684b19d7fb17920d08441`。
+
+2026-08-27 真机刷写前确认设备 `RT08_V3.1`、MAC 精确匹配、电量 100% 和官方 DFU 服务存在。手动连接使 Windows 注册精确 MAC 的 GATT 服务接口后，危险入口使用隔离的 Win32 DFU 传输；144/144 数据块、DFU CHECK 和 DFU END 全部成功。刷后基础 GATT、电量和 v8 `A2 10 sequence=0` 验证通过，`r08 touch-indicator-test` 的一次 `50 55 AA` 请求由用户肉眼确认为正确触控区域闪烁 3 次。
 
 普通 `r08` 命令不调用 DFU。DFU 二进制还要求显式危险模式、固定确认短语和精确哈希；这些门槛不替代用户对未来新二进制的授权。
 
@@ -88,6 +112,7 @@ Device Information 仍显示原厂固件字符串，因为 v7 没有修改该应
 - `finalize_rt08_candidate_with_official_sdk.py`：SDK ZIP、官方工具、输入候选和新摘要校验。
 - `verify_rt08_imu_stream_anchors.py`：原厂函数和 hook 锚点。
 - `emulate_rt08_imu_stream_patch.py`：ARMv6-M 指令级仿真。
+- `emulate_rt08_touch_indicator.py`：从 v8 finalized 的真实 0x50 处理入口执行并截获原厂触控灯参数，确认重复 3 次且不进入光学 LED 路径。
 - `analyze_rt08_boot_activation.py`：OTA End、校验和 ready 链。
 - `inspect_r08_image.py`：容器、头结构和装载地址检查。
 - 对应的 `test_*.py`：防止地址、摘要、协议或 fail-closed 约束回退。

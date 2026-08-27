@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Disable_DevNode, CM_Enable_DevNode, CM_Get_DevNode_Status, CM_Get_Device_ID_ListW,
@@ -23,18 +23,25 @@ impl RingMouseDeviceGuard {
     }
 
     pub fn suppress(&mut self) -> Result<()> {
-        if self.disabled_by_us.is_some() {
-            return Ok(());
+        if !self.suppress_if_present()? {
+            bail!("没有找到 R08_9C07 的 HID 鼠标子设备；为避免光标移动，已拒绝开启触控");
         }
-        let instance_id = find_ring_mouse_instance()?
-            .context("没有找到 R08_9C07 的 HID 鼠标子设备；为避免光标移动，已拒绝开启触控")?;
+        Ok(())
+    }
+
+    pub fn suppress_if_present(&mut self) -> Result<bool> {
+        if self.disabled_by_us.is_some() {
+            return Ok(true);
+        }
+        let Some(instance_id) = find_ring_mouse_instance()? else {
+            return Ok(false);
+        };
         let devinst = locate_devnode(&instance_id)?;
         if !devnode_started(devinst)? {
-            self.disabled_by_us = Some(instance_id);
             tracing::warn!(
-                "R08_POINTER_BLOCK 检测到戒指 HID 鼠标子设备已停用；本次保持无光标模式，并在安全退出时恢复"
+                "R08_POINTER_BLOCK 检测到戒指 HID 鼠标子设备原本已停用；本次保持现状，退出时不改变它"
             );
-            return Ok(());
+            return Ok(true);
         }
 
         let result = unsafe { CM_Disable_DevNode(devinst, 0) };
@@ -50,7 +57,7 @@ impl RingMouseDeviceGuard {
         tracing::info!(
             "R08_POINTER_BLOCK 已停用戒指 HID 鼠标子设备；普通鼠标不受影响，手势仅走 GATT"
         );
-        Ok(())
+        Ok(true)
     }
 
     pub fn restore(&mut self) -> Result<()> {

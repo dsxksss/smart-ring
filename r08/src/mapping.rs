@@ -119,6 +119,16 @@ impl MappingEngine {
         self.clear_pending_actions();
     }
 
+    pub fn control_awake(&self, now_ms: u64) -> bool {
+        self.wake_window_open(now_ms)
+    }
+
+    pub fn wake_control(&mut self, now_ms: u64) -> Vec<Output> {
+        let mut out = Vec::new();
+        self.open_wake_window(now_ms, &mut out);
+        self.filter_inject(out)
+    }
+
     pub fn clear_pending_actions(&mut self) {
         self.tap_count = 0;
         self.last_tap_ms = None;
@@ -175,29 +185,10 @@ impl MappingEngine {
             }
         )));
         if data.len() >= 2 && data[0] == 0x02 && data[1] == 0x02 {
-            if self.config.require_double_tap_wake {
-                if self.wake_window_open(now_ms) {
-                    if self.last_wake_ms.is_some_and(|wake_ms| {
-                        now_ms.saturating_sub(wake_ms) < WAKE_EVENT_DEBOUNCE_MS
-                    }) {
-                        out.push(Output::Log(
-                            "ACTION 已忽略同一次唤醒双击的重复兼容通知".to_string(),
-                        ));
-                    } else {
-                        self.awake_until_ms = Some(now_ms.saturating_add(WAKE_WINDOW_MS));
-                        out.push(Output::Copy);
-                        out.push(Output::Log(
-                            "ACTION 唤醒状态下双击 -> 复制；控制时间续期 1 分钟".to_string(),
-                        ));
-                    }
-                } else {
-                    self.open_wake_window(now_ms, out);
-                }
-            } else {
-                out.push(Output::Log(
-                    "ACTION R08 双击/相机兼容事件，当前模式不执行操作".to_string(),
-                ));
-            }
+            out.push(Output::Log(
+                "ACTION 已忽略 02 02 摇动/相机兼容事件；它可能来自 IMU，不能作为触摸唤醒或复制"
+                    .to_string(),
+            ));
             return;
         }
         if data.len() >= 3 && data[0] == 0x73 && data[1] == 0x2A {
@@ -354,7 +345,17 @@ impl MappingEngine {
         }
     }
 
-    fn record_tap(&mut self, now_ms: u64, _out: &mut Vec<Output>) {
+    fn record_tap(&mut self, now_ms: u64, out: &mut Vec<Output>) {
+        if self.config.require_double_tap_wake
+            && self
+                .last_wake_ms
+                .is_some_and(|wake_ms| now_ms.saturating_sub(wake_ms) < WAKE_EVENT_DEBOUNCE_MS)
+        {
+            out.push(Output::Log(
+                "ACTION 已忽略唤醒双击附带的重复点击通知".to_string(),
+            ));
+            return;
+        }
         if self
             .last_tap_ms
             .is_some_and(|previous| now_ms.saturating_sub(previous) < R08_TAP_DEBOUNCE_MS)
@@ -792,44 +793,70 @@ mod tests {
     }
 
     #[test]
-    fn camera_compat_event_opens_one_minute_wake_window() {
+    fn camera_compat_event_never_opens_wake_window() {
         let mut engine = MappingEngine::new(MappingConfig {
             scroll_gain: 4,
             inject: true,
             require_double_tap_wake: true,
         });
 
-        engine.handle(gatt_action(3), 0);
-        assert!(!engine
-            .tick(20)
+        let camera = build_colmi_packet(&[0x02, 0x02]).unwrap().to_vec();
+        let output = engine.handle(InputEvent::GattPacket(camera), 100);
+        assert!(!engine.control_awake(100));
+        assert!(output
             .iter()
-            .any(|item| matches!(item, Output::Wheel(_))));
+            .any(|item| matches!(item, Output::Log(text) if text.contains("不能作为触摸唤醒"))));
+        assert!(!output
+            .iter()
+            .any(|item| matches!(item, Output::Copy | Output::Paste | Output::Wheel(_))));
+    }
 
-        let wake = build_colmi_packet(&[0x02, 0x02]).unwrap().to_vec();
-        let wake_output = engine.handle(InputEvent::GattPacket(wake), 100);
-        assert!(wake_output
+    #[test]
+    fn wake_double_tap_does_not_immediately_copy() {
+        let mut engine = MappingEngine::new(MappingConfig {
+            scroll_gain: 4,
+            inject: true,
+            require_double_tap_wake: true,
+        });
+        let wake = build_colmi_packet(&[0x73, 0x2A, 0x00]).unwrap().to_vec();
+        engine.handle(InputEvent::GattPacket(wake), 100);
+        assert!(engine.control_awake(100));
+
+        engine.handle(gatt_action(1), 200);
+        engine.handle(gatt_action(1), 450);
+        let wake_tail = engine.tick(450 + R08_TAP_FLUSH_MS);
+        assert!(!wake_tail
+            .iter()
+            .any(|item| matches!(item, Output::Copy | Output::Paste)));
+
+        engine.handle(gatt_action(1), 1_500);
+        engine.handle(gatt_action(1), 1_750);
+        let copy = engine.tick(1_750 + R08_TAP_FLUSH_MS);
+        assert!(copy.contains(&Output::Copy), "{copy:?}");
+        assert!(!engine.control_awake(61_751));
+    }
+
+    #[test]
+    fn firmware_touch_status_opens_and_closes_wake_window() {
+        let mut engine = MappingEngine::new(MappingConfig {
+            scroll_gain: 4,
+            inject: true,
+            require_double_tap_wake: true,
+        });
+        let awake = build_colmi_packet(&[0x73, 0x2A, 0x00]).unwrap().to_vec();
+        let asleep = build_colmi_packet(&[0x73, 0x2A, 0x01]).unwrap().to_vec();
+
+        let awake_output = engine.handle(InputEvent::GattPacket(awake), 100);
+        assert!(engine.control_awake(100));
+        assert!(awake_output
             .iter()
             .any(|item| matches!(item, Output::Log(text) if text.contains("CONTROL_AWAKE"))));
 
-        engine.handle(gatt_action(3), 200);
-        assert!(engine
-            .tick(220)
-            .iter()
-            .any(|item| matches!(item, Output::Wheel(delta) if *delta > 0)));
-
-        let copy = build_colmi_packet(&[0x02, 0x02]).unwrap().to_vec();
-        let copy_output = engine.handle(InputEvent::GattPacket(copy), 1_500);
-        assert!(copy_output.contains(&Output::Copy), "{copy_output:?}");
-
-        let expired = engine.tick(61_500);
-        assert!(expired
+        let asleep_output = engine.handle(InputEvent::GattPacket(asleep), 200);
+        assert!(!engine.control_awake(200));
+        assert!(asleep_output
             .iter()
             .any(|item| matches!(item, Output::Log(text) if text.contains("CONTROL_STANDBY"))));
-        engine.handle(gatt_action(3), 61_600);
-        assert!(!engine
-            .tick(61_620)
-            .iter()
-            .any(|item| matches!(item, Output::Wheel(_))));
     }
 
     #[test]

@@ -26,8 +26,23 @@ PROFILES = {
             "0a4b55c5f9c74d02adb0cfb4aabc1d6ccd5af55238fcd4443a70ee7a6101019a"
         ),
         "classification": "SDK_FINALIZED_IMU_STREAM_CANDIDATE",
+        "output_sha256": "575d500b385f61b6cc1cf8eb9d1a55b68da4ff49a0be32800f8f91f2d8a1ff2a",
         "activation_marker_status": "0xFD/0xFE",
         "imu_patch_present": True,
+    },
+    "imu-touch-v8": {
+        "input_sha256": "4f242ea3601559c059e4aff93079ea14947126326e0b968df1b3f6badd07b984",
+        "old_digest": bytes.fromhex(
+            "3e143d383a69b749ed928345ac04d517d7aefb95ecc0f2f4eafbe9fd9b146f8f"
+        ),
+        "new_digest": bytes.fromhex(
+            "d7aee11d73ea535d8d57140c0a7580eb5443c5028637288cedcb574254ea065a"
+        ),
+        "classification": "SDK_FINALIZED_IMU_TOUCH_V8_CANDIDATE",
+        "output_sha256": "4b44c8a82f227e6697e7c5dc2633db5ed478f69ca28684b19d7fb17920d08441",
+        "activation_marker_status": "0xFD/0xFE",
+        "imu_patch_present": True,
+        "touch_indicator_repeat": 3,
     },
 }
 DEFAULT_PROFILE = PROFILES["imu-v7"]
@@ -107,11 +122,14 @@ def finalize_candidate(
     )
     if changed - allowed:
         raise AssertionError("finalizer changed bytes outside digest and outer sum32")
+    finalized_hash = sha256_hex(finalized)
+    if enforce_input_hash and finalized_hash != selected["output_sha256"]:
+        raise ValueError(f"finalized candidate SHA-256 mismatch: {finalized_hash}")
 
     return finalized, {
         "classification": selected["classification"],
         "input_sha256": input_hash,
-        "candidate_sha256": sha256_hex(finalized),
+        "candidate_sha256": finalized_hash,
         "candidate_size": len(finalized),
         "sdk_image_digest_offset": f"0x{INNER_SHA256_OFFSET:03X}",
         "sdk_image_digest": selected["new_digest"].hex(),
@@ -120,6 +138,7 @@ def finalize_candidate(
         "outer_sum32_valid": True,
         "activation_marker_status": selected["activation_marker_status"],
         "imu_patch_present": selected["imu_patch_present"],
+        "touch_indicator_repeat": selected.get("touch_indicator_repeat"),
         "flash_allowed": False,
     }
 

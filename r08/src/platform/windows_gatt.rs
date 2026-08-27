@@ -1,5 +1,6 @@
 use std::pin::Pin;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures::Stream;
@@ -31,6 +32,8 @@ const DFU_WRITE_UUID: Uuid = Uuid::from_u128(0xde5bf72a_d711_4e47_af26_65e3012a5
 const HARDWARE_UUID: Uuid = Uuid::from_u128(0x00002a27_0000_1000_8000_00805f9b34fb);
 const FIRMWARE_UUID: Uuid = Uuid::from_u128(0x00002a26_0000_1000_8000_00805f9b34fb);
 const BATTERY_UUID: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
+const HRESULT_OPERATION_CANCELLED: i32 = 0x8007_04C7u32 as i32;
+const GATT_WRITE_ATTEMPTS: u8 = 3;
 
 pub struct WindowsGattConnection {
     device: Option<BluetoothLEDevice>,
@@ -160,7 +163,45 @@ impl WindowsGattConnection {
     }
 
     pub async fn write(&self, packet: &[u8]) -> Result<()> {
-        tracing::info!("TX  {}", format_packet(packet));
+        for attempt in 1..=GATT_WRITE_ATTEMPTS {
+            tracing::info!("TX  {}", format_packet(packet));
+            match self.write_once(packet).await {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if attempt < GATT_WRITE_ATTEMPTS
+                        && is_transient_operation_cancelled(&error) =>
+                {
+                    let delay_ms = 250 * u64::from(attempt);
+                    tracing::warn!(
+                        attempt,
+                        limit = GATT_WRITE_ATTEMPTS,
+                        delay_ms,
+                        "WINDOWS_GATT_WRITE_RETRY Windows 蓝牙栈中止了写入；这不是用户操作，将安全重试同一幂等数据包"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+                Err(error) => return Err(error).context("Windows GATT 写入失败"),
+            }
+        }
+        unreachable!("GATT write retry loop always returns")
+    }
+
+    pub async fn write_without_response(&self, packet: &[u8]) -> Result<()> {
+        tracing::info!("TX_NO_RESPONSE  {}", format_packet(packet));
+        let writer = DataWriter::new().context("创建 Windows GATT 无应答写入缓冲区失败")?;
+        writer.WriteBytes(packet)?;
+        let buffer = writer.DetachBuffer()?;
+        let status = await_operation(
+            self.write
+                .WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithoutResponse)
+                .context("发起 Windows GATT 无应答写入失败")?,
+        )
+        .await
+        .context("Windows GATT 无应答写入失败")?;
+        require_success(status, "无应答写入 R08 GATT")
+    }
+
+    async fn write_once(&self, packet: &[u8]) -> Result<()> {
         let writer = DataWriter::new().context("创建 Windows GATT 写入缓冲区失败")?;
         writer.WriteBytes(packet)?;
         let buffer = writer.DetachBuffer()?;
@@ -169,8 +210,7 @@ impl WindowsGattConnection {
                 .WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse)
                 .context("发起 Windows GATT 写入失败")?,
         )
-        .await
-        .context("Windows GATT 写入失败")?;
+        .await?;
         require_success(status, "写入 R08 GATT")
     }
 
@@ -362,7 +402,20 @@ impl WindowsDfuConnection {
         ) {
             (Ok(dfu), Ok(dis), Ok(uart)) => (None, vec![dfu, dis, uart]),
             _ => {
-                let device = open_exact_paired_device().await?;
+                let device = match open_exact_paired_device().await {
+                    Ok(device) => device,
+                    Err(paired_error) => {
+                        tracing::warn!(
+                            "DFU paired-device lookup failed; trying the exact Bluetooth address: {paired_error:#}"
+                        );
+                        await_operation(
+                            BluetoothLEDevice::FromBluetoothAddressAsync(RING_BLUETOOTH_ADDRESS)
+                                .context("open exact R08 by Bluetooth address for DFU")?,
+                        )
+                        .await
+                        .context("Windows did not return exact R08 for DFU")?
+                    }
+                };
                 let actual_address = device.BluetoothAddress()?;
                 if actual_address != RING_BLUETOOTH_ADDRESS {
                     bail!(
@@ -666,6 +719,18 @@ fn require_success(status: GattCommunicationStatus, action: &str) -> Result<()> 
     }
 }
 
+fn is_transient_operation_cancelled(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<windows::core::Error>()
+            .is_some_and(|windows_error| windows_error.code().0 == HRESULT_OPERATION_CANCELLED)
+            || cause
+                .to_string()
+                .to_ascii_uppercase()
+                .contains("0X800704C7")
+    })
+}
+
 fn buffer_to_vec(buffer: &IBuffer) -> windows::core::Result<Vec<u8>> {
     let reader = DataReader::FromBuffer(buffer)?;
     let length = reader.UnconsumedBufferLength()? as usize;
@@ -690,5 +755,22 @@ fn dis_label(uuid: Uuid) -> Option<&'static str> {
         0x2A29 => Some("Manufacturer Name"),
         0x2A50 => Some("PnP ID"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_windows_operation_cancelled_hresult() {
+        let error = anyhow!("操作已被用户取消。 (0x800704C7)");
+        assert!(is_transient_operation_cancelled(&error));
+    }
+
+    #[test]
+    fn does_not_retry_unrelated_gatt_errors() {
+        let error = anyhow!("GattCommunicationStatus::Unreachable");
+        assert!(!is_transient_operation_cancelled(&error));
     }
 }

@@ -17,6 +17,10 @@ from build_rt08_imu_stream_candidate import (
     HOOK_ORIGINAL,
     INNER_SHA256_OFFSET,
     INNER_GIT_VERSION_OFFSET,
+    TOUCH_INDICATOR_REPEAT_ADDRESS,
+    TOUCH_INDICATOR_REPEAT_ORIGINAL,
+    TOUCH_V8_GIT_VERSION,
+    TOUCH_V8_OUTER_FIRMWARE,
     build_candidate,
     validate_patch_binary,
 )
@@ -37,6 +41,10 @@ def candidate_fixture() -> bytes:
     data[INNER_SHA256_OFFSET : INNER_SHA256_OFFSET + 32] = (
         EXPECTED_STOCK_INNER_SHA256
     )
+    touch_offset = address_to_file_offset(TOUCH_INDICATOR_REPEAT_ADDRESS, len(data))
+    data[
+        touch_offset : touch_offset + len(TOUCH_INDICATOR_REPEAT_ORIGINAL)
+    ] = TOUCH_INDICATOR_REPEAT_ORIGINAL
     struct.pack_into("<I", data, 12, sum(data[HEADER_SIZE:]) & 0xFFFFFFFF)
     return bytes(data)
 
@@ -101,6 +109,79 @@ class ImuStreamCandidateBuilderTests(unittest.TestCase):
         self.assertTrue(report["outer_firmware_revision"]["bumped"])
         self.assertTrue(report["activation_marker"]["enabled"])
         self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_optional_touch_indicator_repeat_is_exact_and_reported(self) -> None:
+        stock = candidate_fixture()
+        candidate, report = build_candidate(
+            stock,
+            bytes(range(32)),
+            enforce_stock_hash=False,
+            validate_patch=False,
+            touch_indicator_repeat=3,
+        )
+        touch_offset = address_to_file_offset(
+            TOUCH_INDICATOR_REPEAT_ADDRESS, len(candidate)
+        )
+        self.assertEqual(
+            candidate[touch_offset : touch_offset + 2], bytes.fromhex("03 23")
+        )
+        self.assertTrue(report["touch_indicator"]["patched"])
+        self.assertEqual(report["touch_indicator"]["candidate_repeat"], 3)
+        self.assertTrue(report["touch_indicator"]["optical_sensor_led_untouched"])
+        self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_touch_v8_revision_profile_is_newer_than_installed_v7(self) -> None:
+        stock = bytearray(candidate_fixture())
+        struct.pack_into("<I", stock, INNER_GIT_VERSION_OFFSET, EXPECTED_STOCK_GIT_VERSION)
+        stock[0x10 : 0x10 + len(TOUCH_V8_OUTER_FIRMWARE)] = b"RT08_3.10.48_260309"
+        struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)
+        candidate, report = build_candidate(
+            bytes(stock),
+            bytes(range(32)),
+            enforce_stock_hash=False,
+            validate_patch=False,
+            bump_internal_revision=True,
+            bump_outer_revision=True,
+            touch_indicator_repeat=3,
+            revision_profile="imu-touch-v8",
+        )
+        self.assertEqual(
+            struct.unpack_from("<I", candidate, INNER_GIT_VERSION_OFFSET)[0],
+            TOUCH_V8_GIT_VERSION,
+        )
+        self.assertEqual(
+            candidate[0x10 : 0x10 + len(TOUCH_V8_OUTER_FIRMWARE)],
+            TOUCH_V8_OUTER_FIRMWARE,
+        )
+        self.assertEqual(report["internal_version"]["candidate_semantic"], "1.4.7")
+        self.assertEqual(report["internal_version"]["profile"], "imu-touch-v8")
+        self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_rejects_touch_indicator_repeat_outside_reviewed_range(self) -> None:
+        with self.assertRaisesRegex(ValueError, "between 1 and 10"):
+            build_candidate(
+                candidate_fixture(),
+                bytes(range(32)),
+                enforce_stock_hash=False,
+                validate_patch=False,
+                touch_indicator_repeat=0,
+            )
+
+    def test_rejects_unexpected_touch_indicator_instruction(self) -> None:
+        stock = bytearray(candidate_fixture())
+        touch_offset = address_to_file_offset(
+            TOUCH_INDICATOR_REPEAT_ADDRESS, len(stock)
+        )
+        stock[touch_offset] ^= 1
+        struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)
+        with self.assertRaisesRegex(ValueError, "repeat instruction"):
+            build_candidate(
+                bytes(stock),
+                bytes(range(32)),
+                enforce_stock_hash=False,
+                validate_patch=False,
+                touch_indicator_repeat=3,
+            )
 
     def test_rejects_oversized_patch(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not fit"):

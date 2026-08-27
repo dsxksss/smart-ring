@@ -23,6 +23,13 @@ V7_PREFINAL = (
     / "build"
     / "RT08_3.10.51_260827_imu_stream_v7_prefinal.NON_FLASHABLE.bin"
 )
+V8_PREFINAL = (
+    ROOT
+    / "firmware_research"
+    / "evidence"
+    / "ota"
+    / "RT08_3.10.52_260827_imu_touch_v8_prefinal.NON_FLASHABLE.bin"
+)
 
 
 def synthetic_candidate() -> bytes:
@@ -98,6 +105,28 @@ class OfficialSdkFinalizerTests(unittest.TestCase):
             "575d500b385f61b6cc1cf8eb9d1a55b68da4ff49a0be32800f8f91f2d8a1ff2a",
         )
         self.assertEqual(report["classification"], "SDK_FINALIZED_IMU_STREAM_CANDIDATE")
+        self.assertTrue(report["imu_patch_present"])
+        self.assertFalse(report["flash_allowed"])
+
+    @unittest.skipUnless(V8_PREFINAL.exists(), "exact v8 pre-final image not present")
+    def test_exact_v8_profile_accepts_only_the_locked_digest_update(self) -> None:
+        profile = PROFILES["imu-touch-v8"]
+        candidate = V8_PREFINAL.read_bytes()
+        inner = bytearray(candidate[HEADER_SIZE:])
+        digest_slice = slice(INNER_SHA256_OFFSET, INNER_SHA256_OFFSET + 32)
+        self.assertEqual(inner[digest_slice], profile["old_digest"])
+        inner[digest_slice] = profile["new_digest"]
+
+        _finalized, report = finalize_candidate(
+            candidate, bytes(inner), profile=profile
+        )
+
+        self.assertEqual(report["classification"], "SDK_FINALIZED_IMU_TOUCH_V8_CANDIDATE")
+        self.assertEqual(
+            report["candidate_sha256"],
+            "4b44c8a82f227e6697e7c5dc2633db5ed478f69ca28684b19d7fb17920d08441",
+        )
+        self.assertEqual(report["touch_indicator_repeat"], 3)
         self.assertTrue(report["imu_patch_present"])
         self.assertFalse(report["flash_allowed"])
 

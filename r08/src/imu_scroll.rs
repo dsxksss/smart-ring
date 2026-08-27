@@ -8,21 +8,31 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use futures::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::ble::RingConnection;
-use crate::platform::create_injector;
+use crate::mapping::{InputEvent, MappingConfig, MappingEngine, Output};
 use crate::platform::inject::{Injector, NullInjector};
+use crate::platform::{create_injector, PointerSuppression};
 use crate::protocol::{
-    format_packet, imu_stream_start_packet, imu_stream_stop_packet, AccelerometerSample,
-    ImuStreamEvaluation, ImuStreamSample, ImuStreamStopReason, ImuStreamTracker,
+    decode_uart_battery_response, format_packet, imu_stream_start_packet, imu_stream_stop_packet,
+    uart_battery_query_packet, AccelerometerSample, ImuStreamEvaluation, ImuStreamSample,
+    ImuStreamStopReason, ImuStreamTracker,
 };
 
 pub const EXPECTED_HARDWARE: &str = "RT08_V3.1";
 pub const EXPECTED_FIRMWARE: &str = "RT08_3.10.48_260309";
 pub const STREAM_RENEW_MS: u64 = 8_000;
 const STREAM_FIRST_SAMPLE_TIMEOUT_MS: u64 = 1_500;
+// Windows can deliver a few packets from the previous start command before a
+// later idempotent retry takes effect.  During this short post-start window a
+// second sequence=0 marks the newer stream epoch; outside the window it remains
+// a fail-closed sequence gap.
+const STREAM_EPOCH_RESET_GRACE_MS: u64 = STREAM_FIRST_SAMPLE_TIMEOUT_MS;
+const STREAM_RESTART_SETTLE_MS: u64 = 150;
 const MAX_STREAM_RECOVERIES: u8 = 2;
+const RECOVERY_HEALTHY_SAMPLES: u8 = 10;
 const CALIBRATION_SAMPLES: usize = 10;
 // v7's first real packets put 1 g near 8192 raw counts (for example
 // 8148, -388, 196). Fast hand motion adds linear acceleration and can push the
@@ -34,6 +44,14 @@ const MAX_GRAVITY_NORM: f64 = 45_000.0;
 const BASELINE_ADAPTATION: f64 = 0.02;
 const FILTER_ALPHA: f64 = 0.35;
 const MAX_WHEEL_PER_SAMPLE: f64 = 60.0;
+const UART_READY_TIMEOUT_MS: u64 = 1_500;
+const TAP_JERK_THRESHOLD: f64 = 3_500.0;
+const TAP_SECOND_JERK_THRESHOLD: f64 = 2_500.0;
+const TAP_RELEASE_THRESHOLD: f64 = 1_800.0;
+const TAP_MIN_INTERVAL_MS: u64 = 250;
+const TAP_MAX_INTERVAL_MS: u64 = 850;
+const TAP_STREAM_SETTLE_MS: u64 = 1_500;
+const STANDBY_RETRY_BACKOFF_MS: u64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationPlane {
@@ -168,6 +186,152 @@ impl ImuWheelMapper {
     }
 }
 
+#[derive(Debug, Default)]
+struct StreamRecoveryBudget {
+    consecutive_recoveries: u8,
+    healthy_samples: u8,
+}
+
+impl StreamRecoveryBudget {
+    fn can_recover(&self) -> bool {
+        self.consecutive_recoveries < MAX_STREAM_RECOVERIES
+    }
+
+    fn record_recovery(&mut self) -> u8 {
+        self.consecutive_recoveries = self.consecutive_recoveries.saturating_add(1);
+        self.healthy_samples = 0;
+        self.consecutive_recoveries
+    }
+
+    fn record_valid_sample(&mut self) -> Option<u8> {
+        if self.consecutive_recoveries == 0 {
+            return None;
+        }
+        self.healthy_samples = self.healthy_samples.saturating_add(1);
+        if self.healthy_samples < RECOVERY_HEALTHY_SAMPLES {
+            return None;
+        }
+        let recovered_from = self.consecutive_recoveries;
+        self.reset();
+        Some(recovered_from)
+    }
+
+    fn restart_health_window(&mut self) {
+        self.healthy_samples = 0;
+    }
+
+    fn reset(&mut self) {
+        self.consecutive_recoveries = 0;
+        self.healthy_samples = 0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TapDetection {
+    None,
+    Candidate {
+        jerk: f64,
+    },
+    DoubleTap {
+        interval_ms: u64,
+        jerk: f64,
+        direction_similarity: f64,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ImuDoubleTapDetector {
+    previous: Option<AccelerometerSample>,
+    in_impulse: bool,
+    first_tap: Option<(u64, [f64; 3])>,
+}
+
+impl ImuDoubleTapDetector {
+    fn reset(&mut self) {
+        self.previous = None;
+        self.in_impulse = false;
+        self.first_tap = None;
+    }
+
+    fn update(&mut self, sample: AccelerometerSample, now_ms: u64) -> TapDetection {
+        let Some(previous) = self.previous.replace(sample) else {
+            return TapDetection::None;
+        };
+        let impulse = [
+            f64::from(sample.x) - f64::from(previous.x),
+            f64::from(sample.y) - f64::from(previous.y),
+            f64::from(sample.z) - f64::from(previous.z),
+        ];
+        let jerk = vector_norm(impulse);
+
+        if self.in_impulse {
+            if jerk <= TAP_RELEASE_THRESHOLD {
+                self.in_impulse = false;
+            }
+            if self
+                .first_tap
+                .is_some_and(|(first_ms, _)| now_ms.saturating_sub(first_ms) > TAP_MAX_INTERVAL_MS)
+            {
+                self.first_tap = None;
+            }
+            // A strike and its rebound are one physical impulse.  Require at
+            // least one calm sample before a second impulse can wake control.
+            return TapDetection::None;
+        }
+        let threshold = if self.first_tap.is_some() {
+            TAP_SECOND_JERK_THRESHOLD
+        } else {
+            TAP_JERK_THRESHOLD
+        };
+        if jerk < threshold {
+            if self
+                .first_tap
+                .is_some_and(|(first_ms, _)| now_ms.saturating_sub(first_ms) > TAP_MAX_INTERVAL_MS)
+            {
+                self.first_tap = None;
+            }
+            return TapDetection::None;
+        }
+        self.in_impulse = true;
+
+        let Some((first_ms, first_impulse)) = self.first_tap else {
+            self.first_tap = Some((now_ms, impulse));
+            return TapDetection::Candidate { jerk };
+        };
+        let interval_ms = now_ms.saturating_sub(first_ms);
+        if interval_ms < TAP_MIN_INTERVAL_MS {
+            return TapDetection::None;
+        }
+        if interval_ms > TAP_MAX_INTERVAL_MS {
+            self.first_tap = Some((now_ms, impulse));
+            return TapDetection::Candidate { jerk };
+        }
+
+        // At 10 Hz the sampled impulse can land on either the strike or rebound,
+        // so direction is diagnostic only. Requiring a cosine threshold made a
+        // real second knock disappear even though the two impulses were separate.
+        let direction_similarity = vector_similarity(first_impulse, impulse).abs();
+        self.first_tap = None;
+        TapDetection::DoubleTap {
+            interval_ms,
+            jerk,
+            direction_similarity,
+        }
+    }
+}
+
+fn vector_norm(vector: [f64; 3]) -> f64 {
+    (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
+}
+
+fn vector_similarity(left: [f64; 3], right: [f64; 3]) -> f64 {
+    let denominator = vector_norm(left) * vector_norm(right);
+    if denominator <= f64::EPSILON {
+        return 0.0;
+    }
+    (left[0] * right[0] + left[1] * right[1] + left[2] * right[2]) / denominator
+}
+
 fn plausible_gravity(sample: AccelerometerSample) -> bool {
     let x = f64::from(sample.x);
     let y = f64::from(sample.y);
@@ -192,6 +356,7 @@ fn wrap_angle(angle: f64) -> f64 {
 pub struct ImuStreamOptions {
     pub seconds: u64,
     pub inject: bool,
+    pub double_tap_wake: bool,
     pub config: ImuWheelConfig,
 }
 
@@ -201,17 +366,80 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
         let _ = connection.disconnect().await;
         return Err(error);
     }
+    let mut pointer_suppression = PointerSuppression::new();
+    if options.double_tap_wake {
+        match pointer_suppression.suppress_if_present() {
+            Ok(true) => {}
+            Ok(false) => tracing::info!(
+                "R08_POINTER_BLOCK_NOT_NEEDED Windows 当前没有 R08 HID 鼠标子设备；GATT 组合模式可安全继续"
+            ),
+            Err(error) => {
+                let _ = connection.disconnect().await;
+                return Err(error).context("检查 R08 无光标移动保护失败；组合模式未启动");
+            }
+        }
+        tracing::info!(
+            "IMU_TAP_WAKE_READY 待机保持 v7 IMU 流，仅识别两次敲击，不发送会关闭 GATT 的 3B 触控命令"
+        );
+    }
     let mut notifications = match connection.subscribe().await {
         Ok(notifications) => notifications,
         Err(error) => {
+            if options.double_tap_wake {
+                let _ = pointer_suppression.restore();
+            }
             let _ = connection.disconnect().await;
             return Err(error).context("订阅候选 IMU 通知失败");
         }
     };
+    let uart_ready = tokio::time::timeout(Duration::from_millis(UART_READY_TIMEOUT_MS), async {
+        connection
+            .write(&uart_battery_query_packet())
+            .await
+            .context("发送 UART 通知通道验证查询失败")?;
+        loop {
+            let packet = notifications
+                .next()
+                .await
+                .context("UART 通知流在验证完成前结束")?;
+            if let Some(battery_percent) = decode_uart_battery_response(&packet) {
+                return Ok::<u8, anyhow::Error>(battery_percent);
+            }
+            tracing::info!(
+                packet = %format_packet(&packet),
+                "UART_READY_IGNORED 验证通知通道时收到其他数据包"
+            );
+        }
+    })
+    .await;
+    let battery_percent = match uart_ready {
+        Ok(Ok(battery_percent)) => battery_percent,
+        Ok(Err(error)) => {
+            if options.double_tap_wake {
+                let _ = pointer_suppression.restore();
+            }
+            let _ = connection.disconnect().await;
+            return Err(error).context("UART 通知通道验证失败；未发送 IMU 启动命令");
+        }
+        Err(_) => {
+            if options.double_tap_wake {
+                let _ = pointer_suppression.restore();
+            }
+            let _ = connection.disconnect().await;
+            bail!("UART 通知通道验证超时；未收到只读电量应答，也未发送 IMU 启动命令");
+        }
+    };
+    tracing::info!(
+        battery_percent,
+        "UART_NOTIFY_READY 已收到只读电量应答；通知通道可用"
+    );
     let mut injector: Box<dyn Injector> = if options.inject {
         match create_injector() {
             Ok(injector) => injector,
             Err(error) => {
+                if options.double_tap_wake {
+                    let _ = pointer_suppression.restore();
+                }
                 let _ = connection.disconnect().await;
                 return Err(error).context("创建滚轮注入后端失败");
             }
@@ -221,24 +449,39 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
     };
     let started = Instant::now();
     let mut tracker = ImuStreamTracker::default();
-    let mut last_renew_ms = 0u64;
     let mut waiting_for_first_sample = true;
-    let mut stream_started_at_ms = 0u64;
-    let mut stream_recoveries = 0u8;
+    let mut recovery_budget = StreamRecoveryBudget::default();
+    let mut control_active = !options.double_tap_wake;
+    let mut last_pointer_check_ms = 0u64;
     let start_packet = imu_stream_start_packet();
     let stop_packet = imu_stream_stop_packet();
+    let mut touch_engine = options.double_tap_wake.then(|| {
+        MappingEngine::new(MappingConfig {
+            scroll_gain: 4,
+            inject: options.inject,
+            require_double_tap_wake: true,
+        })
+    });
+    let mut tap_detector = ImuDoubleTapDetector::default();
 
-    if let Err(error) = connection.write(&start_packet).await {
-        let _ = connection.write(&stop_packet).await;
+    if let Err(error) = connection.write_without_response(&start_packet).await {
+        let _ = connection.write_without_response(&stop_packet).await;
         let _ = injector.release_all();
         let _ = connection.disconnect().await;
         return Err(error).context("启动候选 IMU 流失败");
     }
-    tracker.start(0);
+    let initial_stream_ms = arm_stream_tracking(&mut tracker, &started);
+    let mut last_renew_ms = initial_stream_ms;
+    let mut stream_started_at_ms = initial_stream_ms;
     tracing::info!(
-        "IMU_STREAM_ARMED 等待 10 Hz A2/10；首包限时 1.5 秒，进入稳态后 250 ms 无数据将急停"
+        "IMU_STREAM_ARMED 等待 10 Hz A2/10；首包限时 1.5 秒，进入稳态后 750 ms 无数据将急停"
     );
-    if options.inject {
+    if options.double_tap_wake {
+        tracing::info!("IMU_CONTROL_STANDBY 请连续轻敲戒指两次；单次敲击只记录候选，不会启动滚动");
+        println!("控制待机：数据流稳定约 1.5 秒后，请间隔约 0.25～0.85 秒连续轻敲戒指两次。");
+        println!("说明：组合模式通过戒指 IMU 感知敲击，无法判断是否命中电容触控区域；它不会发送 3B，也不会移动鼠标。");
+        println!("看到 IMU_CONTROL_AWAKE 后保持正常姿态约 1 秒，再转动滚动。60 秒后停止注入；按 Enter 或 Ctrl+C 安全退出。");
+    } else if options.inject {
         tracing::info!("IMU_SCROLL_CALIBRATING 请保持正常姿态约 1 秒");
     } else {
         tracing::info!("IMU_LISTEN_ONLY 默认不注入滚轮");
@@ -263,33 +506,96 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
         tokio::select! {
             _ = tick.tick() => {
                 let now_ms = started.elapsed().as_millis() as u64;
-                if waiting_for_first_sample {
-                    if now_ms.saturating_sub(stream_started_at_ms) >= STREAM_FIRST_SAMPLE_TIMEOUT_MS {
-                        run_result = Err(anyhow::anyhow!("IMU 首包超时急停"));
+                if options.double_tap_wake
+                    && now_ms.saturating_sub(last_pointer_check_ms) >= 1_000
+                {
+                    last_pointer_check_ms = now_ms;
+                    if let Err(error) = pointer_suppression.suppress_if_present() {
+                        run_result = Err(error.context("运行时检查 R08 HID 鼠标子设备失败"));
                         break;
                     }
-                } else if let Some(reason) = tracker.check_timeout(now_ms) {
-                    if reason == ImuStreamStopReason::NoDataTimeout
-                        && stream_recoveries < MAX_STREAM_RECOVERIES
-                    {
-                        let _ = injector.release_all();
-                        if let Err(error) = connection.write(&stop_packet).await {
-                            run_result = Err(error.context("IMU 失联后发送急停命令失败"));
+                }
+                if let Some(engine) = touch_engine.as_mut() {
+                    if let Err(error) = apply_touch_outputs(&mut injector, engine.tick(now_ms)) {
+                        run_result = Err(error.context("触控动作注入失败"));
+                        break;
+                    }
+                    if control_active && !engine.control_awake(now_ms) {
+                        if let Err(error) = injector.release_all() {
+                            run_result = Err(error.context("IMU 唤醒窗口结束时释放输入失败"));
                             break;
                         }
-                        if let Err(error) = connection.write(&start_packet).await {
+                        control_active = false;
+                        mapper = ImuWheelMapper::new(options.config)
+                            .expect("validated IMU wheel configuration");
+                        tap_detector.reset();
+                        tracing::info!(
+                            "IMU_CONTROL_STANDBY 60 秒控制窗口结束；已停止输入注入，IMU 继续低速监听下一次双敲"
+                        );
+                    }
+                }
+                if waiting_for_first_sample {
+                    if now_ms.saturating_sub(stream_started_at_ms) >= STREAM_FIRST_SAMPLE_TIMEOUT_MS {
+                        let controller_retry = options.double_tap_wake;
+                        if should_retry_stream(recovery_budget.can_recover(), controller_retry) {
+                            let _ = injector.release_all();
+                            let delay_ms = if recovery_budget.can_recover() {
+                                STREAM_RESTART_SETTLE_MS
+                            } else {
+                                recovery_budget.reset();
+                                STANDBY_RETRY_BACKOFF_MS
+                            };
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            if let Err(error) = connection.write_without_response(&start_packet).await {
+                                run_result = Err(error.context("IMU 首包超时后重启流失败"));
+                                break;
+                            }
+                            let recovery = recovery_budget.record_recovery();
+                            tap_detector.reset();
+                            let restarted_ms = arm_stream_tracking(&mut tracker, &started);
+                            last_renew_ms = restarted_ms;
+                            stream_started_at_ms = restarted_ms;
+                            tracing::warn!(
+                                recovery,
+                                limit = MAX_STREAM_RECOVERIES,
+                                delay_ms,
+                                controller_retry,
+                                "IMU_FIRST_PACKET_RECOVERY 首包超时后已重发幂等启动命令"
+                            );
+                            continue;
+                        }
+                            run_result = Err(anyhow::anyhow!("IMU 首包超时急停"));
+                            break;
+                    }
+                } else if let Some(reason) = tracker.check_timeout(now_ms) {
+                    let controller_retry = options.double_tap_wake;
+                    if reason == ImuStreamStopReason::NoDataTimeout
+                        && should_retry_stream(recovery_budget.can_recover(), controller_retry)
+                    {
+                        let _ = injector.release_all();
+                        let delay_ms = if recovery_budget.can_recover() {
+                            STREAM_RESTART_SETTLE_MS
+                        } else {
+                            recovery_budget.reset();
+                            STANDBY_RETRY_BACKOFF_MS
+                        };
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        if let Err(error) = connection.write_without_response(&start_packet).await {
                             run_result = Err(error.context("IMU 失联后重启流失败"));
                             break;
                         }
-                        stream_recoveries += 1;
-                        tracker.start(now_ms);
-                        last_renew_ms = now_ms;
-                        stream_started_at_ms = now_ms;
+                        let recovery = recovery_budget.record_recovery();
+                        tap_detector.reset();
+                        let restarted_ms = arm_stream_tracking(&mut tracker, &started);
+                        last_renew_ms = restarted_ms;
+                        stream_started_at_ms = restarted_ms;
                         waiting_for_first_sample = true;
                         tracing::warn!(
-                            recovery = stream_recoveries,
+                            recovery,
                             limit = MAX_STREAM_RECOVERIES,
-                            "IMU_GAP_RECOVERY 已先急停并释放输入；正在等待重启后的 sequence=0"
+                            delay_ms,
+                            controller_retry,
+                            "IMU_GAP_RECOVERY 已停止主机输入并重发幂等启动命令；稳定 10 个样本后清零连续失败计数"
                         );
                         continue;
                     }
@@ -297,25 +603,76 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
                     break;
                 }
                 if now_ms.saturating_sub(last_renew_ms) >= STREAM_RENEW_MS {
-                    if let Err(error) = connection.write(&start_packet).await {
+                    if let Err(error) = connection.write_without_response(&start_packet).await {
                         run_result = Err(error.context("IMU 流续期失败"));
                         break;
                     }
-                    tracker.start(now_ms);
-                    last_renew_ms = now_ms;
-                    stream_started_at_ms = now_ms;
+                    tap_detector.reset();
+                    let renewed_ms = arm_stream_tracking(&mut tracker, &started);
+                    last_renew_ms = renewed_ms;
+                    stream_started_at_ms = renewed_ms;
                     waiting_for_first_sample = true;
+                    recovery_budget.restart_health_window();
                     tracing::info!("IMU_STREAM_RENEW 已在设备 12 秒硬超时前安全续期");
                 }
             }
-            packet = futures::StreamExt::next(&mut notifications) => {
+            packet = notifications.next() => {
                 let Some(packet) = packet else {
                     run_result = Err(anyhow::anyhow!("IMU 通知流意外结束"));
                     break;
                 };
                 let now_ms = started.elapsed().as_millis() as u64;
+                let is_stream_packet = packet.len() >= 2 && packet[0] == 0xA2 && packet[1] == 0x10;
+                if !is_stream_packet {
+                    if let Some(engine) = touch_engine.as_mut() {
+                        let outputs = engine.handle(InputEvent::GattPacket(packet), now_ms);
+                        if let Err(error) = apply_touch_outputs(&mut injector, outputs) {
+                            run_result = Err(error.context("触控动作注入失败"));
+                            break;
+                        }
+                        let control_awake = engine.control_awake(now_ms);
+                        if !control_active && control_awake {
+                            mapper = ImuWheelMapper::new(options.config)
+                                .expect("validated IMU wheel configuration");
+                            control_active = true;
+                            tap_detector.reset();
+                            tracing::info!(
+                                "IMU_CONTROL_AWAKE 收到戒指被动触控唤醒通知；控制窗口为 60 秒"
+                            );
+                            if options.inject {
+                                tracing::info!("IMU_SCROLL_CALIBRATING 请保持正常姿态约 1 秒");
+                            }
+                        } else if control_active && !control_awake {
+                            if let Err(error) = injector.release_all() {
+                                run_result = Err(error.context("戒指休眠时释放输入失败"));
+                                break;
+                            }
+                            control_active = false;
+                            mapper = ImuWheelMapper::new(options.config)
+                                .expect("validated IMU wheel configuration");
+                            tap_detector.reset();
+                            tracing::info!("IMU_CONTROL_STANDBY 戒指触控窗口已关闭；IMU 继续监听下一次双敲");
+                        }
+                        continue;
+                    }
+                }
+                let without_history = crate::protocol::evaluate_imu_stream_packet(&packet, None);
+                if should_accept_stream_epoch_reset(
+                    &without_history,
+                    waiting_for_first_sample,
+                    now_ms,
+                    stream_started_at_ms,
+                ) {
+                    tracker.start(now_ms);
+                    waiting_for_first_sample = true;
+                    tap_detector.reset();
+                    tracing::warn!(
+                        elapsed_ms = now_ms.saturating_sub(stream_started_at_ms),
+                        "IMU_STREAM_EPOCH_RESET 启动命令重叠期间收到新的 sequence=0；已丢弃旧世代序号并继续"
+                    );
+                }
                 let evaluation = if waiting_for_first_sample {
-                    match crate::protocol::evaluate_imu_stream_packet(&packet, None) {
+                    match &without_history {
                         ImuStreamEvaluation::Sample(sample) if sample.sequence != 0 => {
                             tracing::debug!(
                                 sequence = sample.sequence,
@@ -333,23 +690,34 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
                         tracing::debug!(packet = %format_packet(&packet), "忽略非 A2/10 通知");
                     }
                     ImuStreamEvaluation::Stop(reason) => {
+                        let controller_retry = options.double_tap_wake;
                         if reason == ImuStreamStopReason::Stale
-                            && stream_recoveries < MAX_STREAM_RECOVERIES
+                            && should_retry_stream(recovery_budget.can_recover(), controller_retry)
                         {
                             let _ = injector.release_all();
-                            if let Err(error) = connection.write(&start_packet).await {
+                            let delay_ms = if recovery_budget.can_recover() {
+                                STREAM_RESTART_SETTLE_MS
+                            } else {
+                                recovery_budget.reset();
+                                STANDBY_RETRY_BACKOFF_MS
+                            };
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            if let Err(error) = connection.write_without_response(&start_packet).await {
                                 run_result = Err(error.context("STALE 后重启 IMU 流失败"));
                                 break;
                             }
-                            stream_recoveries += 1;
-                            tracker.start(now_ms);
-                            last_renew_ms = now_ms;
-                            stream_started_at_ms = now_ms;
+                            let recovery = recovery_budget.record_recovery();
+                            tap_detector.reset();
+                            let restarted_ms = arm_stream_tracking(&mut tracker, &started);
+                            last_renew_ms = restarted_ms;
+                            stream_started_at_ms = restarted_ms;
                             waiting_for_first_sample = true;
                             tracing::warn!(
-                                recovery = stream_recoveries,
+                                recovery,
                                 limit = MAX_STREAM_RECOVERIES,
-                                "IMU_STALE_RECOVERY 固件已急停；正在等待重启后的 sequence=0"
+                                delay_ms,
+                                controller_retry,
+                                "IMU_STALE_RECOVERY 固件已急停；这是连续失败计数，稳定 10 个样本后会清零"
                             );
                             continue;
                         }
@@ -358,6 +726,58 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
                     }
                     ImuStreamEvaluation::Sample(sample) => {
                         waiting_for_first_sample = false;
+                        if let Some(recovered_from) = recovery_budget.record_valid_sample() {
+                            tracing::info!(
+                                recovered_from,
+                                healthy_samples = RECOVERY_HEALTHY_SAMPLES,
+                                "IMU_RECOVERY_BUDGET_RESET 数据流已稳定，连续恢复预算已清零"
+                            );
+                        }
+                        if options.double_tap_wake && !control_active {
+                            if !tap_detection_ready(now_ms, stream_started_at_ms) {
+                                tap_detector.reset();
+                                continue;
+                            }
+                            match tap_detector.update(sample.acceleration, now_ms) {
+                                TapDetection::None => {}
+                                TapDetection::Candidate { jerk } => tracing::info!(
+                                    jerk = format_args!("{jerk:.0}"),
+                                    "IMU_TAP_CANDIDATE 已记录第一次敲击；等待 0.25～0.85 秒内第二次敲击"
+                                ),
+                                TapDetection::DoubleTap {
+                                    interval_ms,
+                                    jerk,
+                                    direction_similarity,
+                                } => {
+                                    if let Some(engine) = touch_engine.as_mut() {
+                                        if let Err(error) = apply_touch_outputs(
+                                            &mut injector,
+                                            engine.wake_control(now_ms),
+                                        ) {
+                                            run_result = Err(error.context("双敲唤醒后更新控制状态失败"));
+                                            break;
+                                        }
+                                    }
+                                    control_active = true;
+                                    mapper = ImuWheelMapper::new(options.config)
+                                        .expect("validated IMU wheel configuration");
+                                    tracing::info!(
+                                        interval_ms,
+                                        jerk = format_args!("{jerk:.0}"),
+                                        similarity = format_args!("{direction_similarity:.2}"),
+                                        "IMU_CONTROL_AWAKE 已确认两次独立敲击；控制窗口为 60 秒"
+                                    );
+                                    if options.inject {
+                                        tracing::info!("IMU_SCROLL_CALIBRATING 请保持正常姿态约 1 秒");
+                                    }
+                                    continue;
+                                }
+                            }
+                            continue;
+                        }
+                        if !control_active {
+                            continue;
+                        }
                         let was_calibrated = mapper.calibrated();
                         let Some(delta) = mapper.update(sample) else {
                             run_result = Err(anyhow::anyhow!("IMU 重力向量超出可信范围，已急停"));
@@ -381,9 +801,14 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
         }
     }
 
-    let stop_error = connection.write(&stop_packet).await.err();
+    let stop_error = connection.write_without_response(&stop_packet).await.err();
     let release_result = injector.release_all();
     let disconnect_result = connection.disconnect().await;
+    let pointer_result = if options.double_tap_wake {
+        pointer_suppression.restore()
+    } else {
+        Ok(())
+    };
     if let Some(error) = stop_error.as_ref() {
         tracing::warn!("发送 IMU 停止命令失败：{error:#}");
     }
@@ -395,17 +820,64 @@ pub async fn run(connection: RingConnection, options: ImuStreamOptions) -> Resul
             if let Err(cleanup_error) = disconnect_result {
                 tracing::warn!("急停后断开戒指失败：{cleanup_error:#}");
             }
+            if let Err(cleanup_error) = pointer_result {
+                tracing::warn!("急停后恢复 R08 HID 鼠标子设备失败：{cleanup_error:#}");
+            }
             Err(error)
         }
         Ok(()) => {
             release_result.context("退出时释放输入状态失败")?;
             disconnect_result.context("退出时断开戒指失败")?;
+            pointer_result.context("退出时恢复 R08 HID 鼠标子设备失败")?;
             if let Some(error) = stop_error {
                 return Err(error).context("退出时发送 IMU 停止命令失败");
             }
             Ok(())
         }
     }
+}
+
+fn arm_stream_tracking(tracker: &mut ImuStreamTracker, started: &Instant) -> u64 {
+    let now_ms = started.elapsed().as_millis() as u64;
+    tracker.start(now_ms);
+    now_ms
+}
+
+fn should_accept_stream_epoch_reset(
+    without_history: &ImuStreamEvaluation,
+    waiting_for_first_sample: bool,
+    now_ms: u64,
+    stream_started_at_ms: u64,
+) -> bool {
+    !waiting_for_first_sample
+        && now_ms.saturating_sub(stream_started_at_ms) <= STREAM_EPOCH_RESET_GRACE_MS
+        && matches!(
+            without_history,
+            ImuStreamEvaluation::Sample(sample) if sample.sequence == 0
+        )
+}
+
+fn tap_detection_ready(now_ms: u64, stream_started_at_ms: u64) -> bool {
+    now_ms.saturating_sub(stream_started_at_ms) >= TAP_STREAM_SETTLE_MS
+}
+
+fn should_retry_stream(recovery_budget_available: bool, persistent_controller: bool) -> bool {
+    recovery_budget_available || persistent_controller
+}
+
+fn apply_touch_outputs(injector: &mut Box<dyn Injector>, outputs: Vec<Output>) -> Result<()> {
+    for output in outputs {
+        match output {
+            Output::Log(text) => tracing::info!("{text}"),
+            Output::Wheel(delta) => injector.wheel(delta)?,
+            Output::CaptureCursorAnchor => injector.capture_cursor_anchor()?,
+            Output::RestoreCursor => injector.restore_cursor()?,
+            Output::ReleaseLeftButton => injector.release_left_button()?,
+            Output::Copy => injector.copy()?,
+            Output::Paste => injector.paste()?,
+        }
+    }
+    Ok(())
 }
 
 async fn verify_device_identity(connection: &RingConnection) -> Result<()> {
@@ -464,6 +936,152 @@ mod tests {
         mapper
     }
 
+    fn acceleration(x: i16, y: i16, z: i16) -> AccelerometerSample {
+        AccelerometerSample { x, y, z }
+    }
+
+    #[test]
+    fn imu_double_tap_requires_two_separate_impulses() {
+        let mut detector = ImuDoubleTapDetector::default();
+        assert_eq!(
+            detector.update(acceleration(0, 0, 8_192), 0),
+            TapDetection::None
+        );
+        assert!(matches!(
+            detector.update(acceleration(7_000, 0, 8_192), 100),
+            TapDetection::Candidate { .. }
+        ));
+        assert_eq!(
+            detector.update(acceleration(0, 0, 8_192), 200),
+            TapDetection::None
+        );
+        assert_eq!(
+            detector.update(acceleration(0, 0, 8_192), 300),
+            TapDetection::None
+        );
+        assert!(matches!(
+            detector.update(acceleration(7_000, 0, 8_192), 500),
+            TapDetection::DoubleTap {
+                interval_ms: 400,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn imu_fast_double_tap_requires_a_calm_sample_after_the_first_rebound() {
+        let mut detector = ImuDoubleTapDetector::default();
+        detector.update(acceleration(0, 0, 8_192), 0);
+        assert!(matches!(
+            detector.update(acceleration(7_000, 0, 8_192), 100),
+            TapDetection::Candidate { .. }
+        ));
+        // The first tap rebounds before the detector has seen a calm sample.
+        assert_eq!(
+            detector.update(acceleration(0, 0, 8_192), 200),
+            TapDetection::None
+        );
+        assert_eq!(
+            detector.update(acceleration(0, 0, 8_192), 300),
+            TapDetection::None
+        );
+        assert!(matches!(
+            detector.update(acceleration(6_000, 0, 8_192), 400),
+            TapDetection::DoubleTap {
+                interval_ms: 300,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn imu_single_tap_and_slow_rotation_never_wake() {
+        let mut detector = ImuDoubleTapDetector::default();
+        detector.update(acceleration(0, 0, 8_192), 0);
+        assert!(matches!(
+            detector.update(acceleration(7_000, 0, 8_192), 100),
+            TapDetection::Candidate { .. }
+        ));
+        detector.update(acceleration(0, 0, 8_192), 200);
+        detector.update(acceleration(0, 0, 8_192), 300);
+        for (index, x) in [1_000, 2_000, 3_000, 4_000, 5_000].into_iter().enumerate() {
+            assert_eq!(
+                detector.update(acceleration(x, 0, 8_192), 1_100 + index as u64 * 100),
+                TapDetection::None
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_budget_resets_after_stable_stream() {
+        let mut budget = StreamRecoveryBudget::default();
+        assert_eq!(budget.record_recovery(), 1);
+        for _ in 0..RECOVERY_HEALTHY_SAMPLES - 1 {
+            assert_eq!(budget.record_valid_sample(), None);
+        }
+        assert_eq!(budget.record_valid_sample(), Some(1));
+        assert!(budget.can_recover());
+        assert_eq!(budget.record_recovery(), 1);
+    }
+
+    #[test]
+    fn recovery_budget_still_fails_closed_on_consecutive_gaps() {
+        let mut budget = StreamRecoveryBudget::default();
+        assert_eq!(budget.record_recovery(), 1);
+        for _ in 0..RECOVERY_HEALTHY_SAMPLES - 1 {
+            budget.record_valid_sample();
+        }
+        assert_eq!(budget.record_recovery(), 2);
+        assert!(!budget.can_recover());
+    }
+
+    #[test]
+    fn accepts_a_late_sequence_zero_only_inside_the_post_start_grace_window() {
+        let sequence_zero = ImuStreamEvaluation::Sample(sample(0, 0.0));
+        assert!(should_accept_stream_epoch_reset(
+            &sequence_zero,
+            false,
+            2_200,
+            1_000
+        ));
+        assert!(!should_accept_stream_epoch_reset(
+            &sequence_zero,
+            false,
+            2_501,
+            1_000
+        ));
+        assert!(!should_accept_stream_epoch_reset(
+            &sequence_zero,
+            true,
+            1_200,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn never_treats_a_nonzero_sequence_as_a_new_stream_epoch() {
+        let sequence_one = ImuStreamEvaluation::Sample(sample(1, 0.0));
+        assert!(!should_accept_stream_epoch_reset(
+            &sequence_one,
+            false,
+            1_200,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn tap_detection_waits_for_the_stream_to_settle() {
+        assert!(!tap_detection_ready(2_499, 1_000));
+        assert!(tap_detection_ready(2_500, 1_000));
+    }
+
+    #[test]
+    fn persistent_double_tap_controller_keeps_retrying_after_recovery_budget_is_used() {
+        assert!(should_retry_stream(false, true));
+        assert!(should_retry_stream(true, false));
+        assert!(!should_retry_stream(false, false));
+    }
+
     #[test]
     fn packet_commands_are_exact_and_checksummed() {
         assert_eq!(
@@ -474,6 +1092,23 @@ mod tests {
             imu_stream_stop_packet(),
             [0xA1, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAA]
         );
+    }
+
+    #[test]
+    fn uart_ready_query_and_response_are_strict() {
+        assert_eq!(
+            uart_battery_query_packet(),
+            [0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x03]
+        );
+        let mut response = [0u8; 16];
+        response[0] = 0x83;
+        response[1] = 72;
+        response[15] = response[..15]
+            .iter()
+            .fold(0u8, |sum, value| sum.wrapping_add(*value));
+        assert_eq!(decode_uart_battery_response(&response), Some(72));
+        response[15] ^= 1;
+        assert_eq!(decode_uart_battery_response(&response), None);
     }
 
     #[test]
