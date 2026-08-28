@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.85"
 description = "Cross-platform R08 smart ring BLE/HID controller"
 publish = false
+default-run = "r08"
 
 [dependencies]
 anyhow = "1"
