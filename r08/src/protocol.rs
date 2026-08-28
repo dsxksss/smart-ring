@@ -22,6 +22,8 @@ pub const IMU_STREAM_NO_DATA_TIMEOUT_MS: u64 = 750;
 pub const IMU_STREAM_COMMAND: u8 = 0x09;
 pub const FIRMWARE_CAPABILITY_PROBE_COMMAND: u8 = 0x0A;
 pub const IMU_TOUCH_V9_CAPABILITY_STATUS: u8 = 0xFC;
+pub const IMU_TOUCH_V10_CAPABILITY_STATUS: u8 = 0xFB;
+pub const IMU_TOUCH_V11_CAPABILITY_STATUS: u8 = 0xFA;
 
 pub const NORDIC_UART_SERVICE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6e40fff0_b5a3_f393_e0a9_e50e24dcca9e);
@@ -166,8 +168,9 @@ pub fn imu_stream_stop_packet() -> [u8; COLMI_PACKET_LEN] {
 
 /// Query the independent A1 status marker embedded in reviewed custom builds.
 ///
-/// Stock replies 0xFF, v7/v8 reply 0xFD, and the HID-mouse-blocked v9 build
-/// replies 0xFC.  This command does not start a sensor or change touch state.
+/// Stock replies 0xFF, v7/v8 reply 0xFD, the HID-mouse-blocked v9 build replies
+/// 0xFC, native wheel-only v10 replies 0xFB, and filtered v11 replies 0xFA. This command does not
+/// start a sensor or change touch state.
 pub fn firmware_capability_probe_packet() -> [u8; COLMI_PACKET_LEN] {
     build_colmi_packet(&[0xA1, FIRMWARE_CAPABILITY_PROBE_COMMAND, 0x00])
         .expect("firmware capability probe")
@@ -176,7 +179,7 @@ pub fn firmware_capability_probe_packet() -> [u8; COLMI_PACKET_LEN] {
 pub fn decode_firmware_capability_status(packet: &[u8]) -> Option<u8> {
     if packet.len() != COLMI_PACKET_LEN
         || packet[0] != 0xA1
-        || !matches!(packet[1], 0xFC..=0xFF)
+        || !matches!(packet[1], 0xFA..=0xFF)
         || !checksum_ok(packet)
     {
         return None;
@@ -186,6 +189,23 @@ pub fn decode_firmware_capability_status(packet: &[u8]) -> Option<u8> {
 
 pub fn is_imu_touch_v9_capability(packet: &[u8]) -> bool {
     decode_firmware_capability_status(packet) == Some(IMU_TOUCH_V9_CAPABILITY_STATUS)
+}
+
+pub fn is_imu_touch_v10_capability(packet: &[u8]) -> bool {
+    decode_firmware_capability_status(packet) == Some(IMU_TOUCH_V10_CAPABILITY_STATUS)
+}
+
+pub fn is_imu_touch_v11_capability(packet: &[u8]) -> bool {
+    decode_firmware_capability_status(packet) == Some(IMU_TOUCH_V11_CAPABILITY_STATUS)
+}
+
+pub fn is_reviewed_touch_capability_status(status: u8) -> bool {
+    matches!(
+        status,
+        IMU_TOUCH_V9_CAPABILITY_STATUS
+            | IMU_TOUCH_V10_CAPABILITY_STATUS
+            | IMU_TOUCH_V11_CAPABILITY_STATUS
+    )
 }
 
 pub fn is_dfu_uuid(uuid: uuid::Uuid) -> bool {
@@ -505,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn identifies_only_the_checksum_valid_v9_capability_marker() {
+    fn identifies_only_checksum_valid_reviewed_touch_capability_markers() {
         assert_eq!(
             format_packet(&firmware_capability_probe_packet()),
             "A1 0A 00 00 00 00 00 00 00 00 00 00 00 00 00 AB"
@@ -516,6 +536,25 @@ mod tests {
             Some(IMU_TOUCH_V9_CAPABILITY_STATUS)
         );
         assert!(is_imu_touch_v9_capability(&v9));
+
+        let v10 = build_colmi_packet(&[0xA1, IMU_TOUCH_V10_CAPABILITY_STATUS]).unwrap();
+        assert_eq!(
+            decode_firmware_capability_status(&v10),
+            Some(IMU_TOUCH_V10_CAPABILITY_STATUS)
+        );
+        assert!(is_imu_touch_v10_capability(&v10));
+        assert!(is_reviewed_touch_capability_status(
+            IMU_TOUCH_V10_CAPABILITY_STATUS
+        ));
+        let v11 = build_colmi_packet(&[0xA1, IMU_TOUCH_V11_CAPABILITY_STATUS]).unwrap();
+        assert_eq!(
+            decode_firmware_capability_status(&v11),
+            Some(IMU_TOUCH_V11_CAPABILITY_STATUS)
+        );
+        assert!(is_imu_touch_v11_capability(&v11));
+        assert!(is_reviewed_touch_capability_status(
+            IMU_TOUCH_V11_CAPABILITY_STATUS
+        ));
 
         let v8 = build_colmi_packet(&[0xA1, 0xFD]).unwrap();
         assert_eq!(decode_firmware_capability_status(&v8), Some(0xFD));

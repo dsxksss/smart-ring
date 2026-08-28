@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import struct
 import unittest
 
@@ -25,8 +26,24 @@ from build_rt08_imu_stream_candidate import (
     TOUCH_V9_GIT_VERSION,
     TOUCH_V9_OUTER_FIRMWARE,
     TOUCH_V9_STATUS_MARKER,
+    TOUCH_V10_GIT_VERSION,
+    TOUCH_V10_OUTER_FIRMWARE,
+    TOUCH_V10_STATUS_MARKER,
+    TOUCH_V11_GIT_VERSION,
+    TOUCH_V11_OUTER_FIRMWARE,
+    TOUCH_V11_STATUS_MARKER,
+    TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS,
+    TOUCH_WHEEL_EXTENDED_ENTRY_ORIGINAL,
+    TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT,
+    TOUCH_WHEEL_MOTION_HOOK_ADDRESS,
+    TOUCH_WHEEL_MOTION_HOOK_ORIGINAL,
+    TOUCH_WHEEL_PATCH_ADDRESS,
+    TOUCH_WHEEL_PATCH_ORIGINAL,
+    TOUCH_WHEEL_PATCH_SHA256,
+    TOUCH_WHEEL_V11_PATCH_SHA256,
     build_candidate,
     validate_patch_binary,
+    validate_touch_wheel_patch_binary,
 )
 from test_analyze_rt08_thumb import synthetic_image
 
@@ -52,8 +69,36 @@ def candidate_fixture() -> bytes:
     for address, original, _replacement in HID_MOUSE_REPORT_FUNCTIONS:
         offset = address_to_file_offset(address, len(data))
         data[offset : offset + len(original)] = original
+    motion_hook_offset = address_to_file_offset(
+        TOUCH_WHEEL_MOTION_HOOK_ADDRESS, len(data)
+    )
+    data[
+        motion_hook_offset : motion_hook_offset + len(TOUCH_WHEEL_MOTION_HOOK_ORIGINAL)
+    ] = TOUCH_WHEEL_MOTION_HOOK_ORIGINAL
+    extended_entry_offset = address_to_file_offset(
+        TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS, len(data)
+    )
+    data[
+        extended_entry_offset : extended_entry_offset
+        + len(TOUCH_WHEEL_EXTENDED_ENTRY_ORIGINAL)
+    ] = TOUCH_WHEEL_EXTENDED_ENTRY_ORIGINAL
+    wheel_patch_offset = address_to_file_offset(TOUCH_WHEEL_PATCH_ADDRESS, len(data))
+    data[
+        wheel_patch_offset : wheel_patch_offset + len(TOUCH_WHEEL_PATCH_ORIGINAL)
+    ] = TOUCH_WHEEL_PATCH_ORIGINAL
     struct.pack_into("<I", data, 12, sum(data[HEADER_SIZE:]) & 0xFFFFFFFF)
     return bytes(data)
+
+
+REVIEWED_TOUCH_WHEEL_PATCH = bytes.fromhex(
+    "00 2a 05 d0 02 dc 01 23 5b 42 02 e0 01 23 00 e0 "
+    "00 23 00 20 00 21 00 22 6c 46 20 72 70 47"
+)
+REVIEWED_TOUCH_WHEEL_V11_PATCH = bytes.fromhex(
+    "01 28 0b d1 10 2a 07 da 10 24 64 42 a2 42 00 dd "
+    "04 e0 01 23 5b 42 02 e0 01 23 00 e0 00 23 00 20 "
+    "00 21 00 22 6c 46 20 72 70 47"
+)
 
 
 class ImuStreamCandidateBuilderTests(unittest.TestCase):
@@ -219,6 +264,150 @@ class ImuStreamCandidateBuilderTests(unittest.TestCase):
                 block_hid_mouse_reports=True,
                 revision_profile="imu-touch-v8",
             )
+
+    def test_touch_v10_rewrites_only_y_motion_to_native_wheel(self) -> None:
+        self.assertEqual(
+            hashlib.sha256(REVIEWED_TOUCH_WHEEL_PATCH).hexdigest(),
+            TOUCH_WHEEL_PATCH_SHA256,
+        )
+        stock = bytearray(candidate_fixture())
+        struct.pack_into("<I", stock, INNER_GIT_VERSION_OFFSET, EXPECTED_STOCK_GIT_VERSION)
+        stock[0x10 : 0x10 + len(TOUCH_V10_OUTER_FIRMWARE)] = (
+            b"RT08_3.10.48_260309"
+        )
+        marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
+        stock[marker_offset : marker_offset + 2] = bytes.fromhex("ff 21")
+        struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)
+
+        candidate, report = build_candidate(
+            bytes(stock),
+            bytes(range(32)),
+            enforce_stock_hash=False,
+            validate_patch=False,
+            bump_internal_revision=True,
+            bump_outer_revision=True,
+            add_activation_marker=True,
+            touch_indicator_repeat=3,
+            touch_wheel_patch=REVIEWED_TOUCH_WHEEL_PATCH,
+            revision_profile="imu-touch-v10",
+        )
+
+        self.assertEqual(
+            struct.unpack_from("<I", candidate, INNER_GIT_VERSION_OFFSET)[0],
+            TOUCH_V10_GIT_VERSION,
+        )
+        self.assertEqual(
+            candidate[0x10 : 0x10 + len(TOUCH_V10_OUTER_FIRMWARE)],
+            TOUCH_V10_OUTER_FIRMWARE,
+        )
+        self.assertEqual(
+            candidate[marker_offset : marker_offset + 2], TOUCH_V10_STATUS_MARKER
+        )
+        motion_hook_offset = address_to_file_offset(
+            TOUCH_WHEEL_MOTION_HOOK_ADDRESS, len(candidate)
+        )
+        first, second = struct.unpack_from("<HH", candidate, motion_hook_offset)
+        self.assertEqual(
+            decode_thumb_bl(TOUCH_WHEEL_MOTION_HOOK_ADDRESS, first, second),
+            TOUCH_WHEEL_PATCH_ADDRESS,
+        )
+        extended_entry_offset = address_to_file_offset(
+            TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS, len(candidate)
+        )
+        self.assertEqual(
+            candidate[
+                extended_entry_offset : extended_entry_offset
+                + len(TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT)
+            ],
+            TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT,
+        )
+        wheel_patch_offset = address_to_file_offset(
+            TOUCH_WHEEL_PATCH_ADDRESS, len(candidate)
+        )
+        self.assertEqual(
+            candidate[
+                wheel_patch_offset : wheel_patch_offset + len(REVIEWED_TOUCH_WHEEL_PATCH)
+            ],
+            REVIEWED_TOUCH_WHEEL_PATCH,
+        )
+        self.assertEqual(report["internal_version"]["candidate_semantic"], "1.4.9")
+        self.assertEqual(report["activation_marker"]["unknown_a1_status"], "0xFB")
+        self.assertTrue(report["touch_wheel_rewrite"]["enabled"])
+        self.assertTrue(report["touch_wheel_rewrite"]["pointer_axes_forced_zero"])
+        self.assertTrue(report["touch_wheel_rewrite"]["mouse_buttons_forced_zero"])
+        self.assertFalse(report["hid_mouse_reports"]["blocked"])
+        self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_touch_wheel_rewrite_requires_v10_profile(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires the imu-touch-v10"):
+            build_candidate(
+                candidate_fixture(),
+                bytes(range(32)),
+                enforce_stock_hash=False,
+                validate_patch=False,
+                touch_wheel_patch=REVIEWED_TOUCH_WHEEL_PATCH,
+                revision_profile="imu-touch-v9",
+            )
+
+    def test_touch_v11_requires_contact_and_large_y_motion(self) -> None:
+        self.assertEqual(
+            hashlib.sha256(REVIEWED_TOUCH_WHEEL_V11_PATCH).hexdigest(),
+            TOUCH_WHEEL_V11_PATCH_SHA256,
+        )
+        stock = bytearray(candidate_fixture())
+        struct.pack_into("<I", stock, INNER_GIT_VERSION_OFFSET, EXPECTED_STOCK_GIT_VERSION)
+        stock[0x10 : 0x10 + len(TOUCH_V11_OUTER_FIRMWARE)] = (
+            b"RT08_3.10.48_260309"
+        )
+        marker_offset = address_to_file_offset(DEFAULT_STATUS_ADDRESS, len(stock))
+        stock[marker_offset : marker_offset + 2] = bytes.fromhex("ff 21")
+        struct.pack_into("<I", stock, 12, sum(stock[HEADER_SIZE:]) & 0xFFFFFFFF)
+
+        candidate, report = build_candidate(
+            bytes(stock),
+            bytes(range(32)),
+            enforce_stock_hash=False,
+            validate_patch=False,
+            bump_internal_revision=True,
+            bump_outer_revision=True,
+            add_activation_marker=True,
+            touch_indicator_repeat=3,
+            touch_wheel_patch=REVIEWED_TOUCH_WHEEL_V11_PATCH,
+            revision_profile="imu-touch-v11",
+        )
+
+        self.assertEqual(
+            struct.unpack_from("<I", candidate, INNER_GIT_VERSION_OFFSET)[0],
+            TOUCH_V11_GIT_VERSION,
+        )
+        self.assertEqual(
+            candidate[0x10 : 0x10 + len(TOUCH_V11_OUTER_FIRMWARE)],
+            TOUCH_V11_OUTER_FIRMWARE,
+        )
+        self.assertEqual(
+            candidate[marker_offset : marker_offset + 2], TOUCH_V11_STATUS_MARKER
+        )
+        validation = report["touch_wheel_rewrite"]["validation"]
+        self.assertEqual(validation["behavior"], "contact-gated-abs-y-16")
+        self.assertTrue(validation["contact_flag_required"])
+        self.assertEqual(validation["minimum_abs_y"], 16)
+        self.assertEqual(report["internal_version"]["candidate_semantic"], "1.5.0")
+        self.assertEqual(report["activation_marker"]["unknown_a1_status"], "0xFA")
+        self.assertEqual(report["unplanned_differences"], 0)
+
+    def test_v10_requires_exact_reviewed_touch_wheel_patch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires the reviewed"):
+            build_candidate(
+                candidate_fixture(),
+                bytes(range(32)),
+                enforce_stock_hash=False,
+                validate_patch=False,
+                revision_profile="imu-touch-v10",
+            )
+        damaged = bytearray(REVIEWED_TOUCH_WHEEL_PATCH)
+        damaged[0] ^= 1
+        with self.assertRaisesRegex(ValueError, "SHA-256 differs"):
+            validate_touch_wheel_patch_binary(bytes(damaged))
 
     def test_rejects_touch_indicator_repeat_outside_reviewed_range(self) -> None:
         with self.assertRaisesRegex(ValueError, "between 1 and 10"):

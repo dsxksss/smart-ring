@@ -1,8 +1,10 @@
 use std::io::{self, Write};
+use std::pin::Pin;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use futures::{Stream, StreamExt};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -10,7 +12,16 @@ use crate::ble::RingConnection;
 use crate::mapping::{InputEvent, MappingConfig, MappingEngine, Output};
 use crate::platform::inject::{Injector, NullInjector};
 use crate::platform::{create_injector, spawn_hid_monitor, PointerSuppression};
-use crate::protocol::{touch_disable_packet, touch_enable_packet, touch_read_packet};
+use crate::protocol::{
+    decode_firmware_capability_status, firmware_capability_probe_packet, format_packet,
+    touch_disable_packet, touch_enable_packet, touch_read_packet, IMU_TOUCH_V10_CAPABILITY_STATUS,
+    IMU_TOUCH_V11_CAPABILITY_STATUS, IMU_TOUCH_V9_CAPABILITY_STATUS,
+};
+
+const CAPABILITY_PROBE_TIMEOUT_MS: u64 = 1_500;
+const TOUCH_ARM_TIMEOUT_MS: u64 = 1_500;
+
+type NotificationStream = Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MenuCommand {
@@ -35,42 +46,152 @@ pub struct SessionOptions {
     pub require_double_tap_wake: bool,
 }
 
+async fn probe_reviewed_touch_firmware(
+    connection: &RingConnection,
+    notifications: &mut NotificationStream,
+) -> Result<u8> {
+    connection
+        .write(&firmware_capability_probe_packet())
+        .await
+        .context("发送只读固件能力标记查询失败")?;
+    let status = tokio::time::timeout(Duration::from_millis(CAPABILITY_PROBE_TIMEOUT_MS), async {
+        loop {
+            let packet = notifications
+                .next()
+                .await
+                .context("固件能力标记返回前通知流结束")?;
+            if let Some(status) = decode_firmware_capability_status(&packet) {
+                return Ok::<u8, anyhow::Error>(status);
+            }
+            tracing::info!(
+                packet = %format_packet(&packet),
+                "TOUCH_CAPABILITY_PROBE_IGNORED 等待 A1 能力标记时忽略其他通知"
+            );
+        }
+    })
+    .await
+    .context("固件能力标记查询超时")??;
+    tracing::info!(
+        status = format_args!("0x{status:02X}"),
+        "TOUCH_FIRMWARE_CAPABILITY 已读取独立 A1 状态标记"
+    );
+    Ok(status)
+}
+
+async fn arm_touch(
+    connection: &RingConnection,
+    notifications: &mut NotificationStream,
+    options: &SessionOptions,
+) -> Result<()> {
+    let packet = touch_enable_packet(options.touch_type, options.sleep_minutes);
+    connection
+        .write(&packet)
+        .await
+        .context("发送 R08 智能触控配置失败")?;
+    tokio::time::timeout(Duration::from_millis(TOUCH_ARM_TIMEOUT_MS), async {
+        loop {
+            let response = notifications
+                .next()
+                .await
+                .context("R08 触控设置应答前通知流结束")?;
+            if response.as_slice() == packet {
+                return Ok::<(), anyhow::Error>(());
+            }
+            tracing::info!(
+                packet = %format_packet(&response),
+                "TOUCH_ARM_IGNORED 等待 3B 精确应答时忽略其他通知"
+            );
+        }
+    })
+    .await
+    .context("R08 触控设置应答超时；未开启电脑控制")??;
+    tracing::info!("TOUCH_ARMED 已确认 3B 精确应答；双击触控区唤醒后可滑动滚轮");
+    Ok(())
+}
+
 pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<()> {
     let mut pointer_suppression = PointerSuppression::new();
-    pointer_suppression
-        .suppress()
-        .context("无法启用 R08 无光标移动保护；触控未开启")?;
-    let mut touch_enabled = false;
-    if options.touch_on_start {
-        set_touch_enabled(&connection, &options, true).await?;
-        touch_enabled = true;
-    }
     tracing::info!("正在订阅 R08 动作通知……");
     let mut notifications = match connection.subscribe().await {
         Ok(notifications) => notifications,
         Err(error) => {
-            if touch_enabled {
-                let _ = set_touch_enabled(&connection, &options, false).await;
-            }
             let _ = connection.disconnect().await;
-            let _ = pointer_suppression.restore();
-            return Err(error).context("订阅 R08 动作通知失败；已关闭触控并恢复设备");
+            return Err(error).context("订阅 R08 动作通知失败；触控尚未开启");
         }
     };
     tracing::info!("R08 动作通知订阅完成");
-    if touch_enabled {
-        // The first write wakes firmware before CCCD subscription. Repeat the
-        // official command after subscription so the armed state and its
-        // status response are observable instead of assuming the first write
-        // took effect.
-        set_touch_enabled(&connection, &options, true)
-            .await
-            .context("订阅完成后重新武装 R08 智能触控失败")?;
-        connection
-            .write(&touch_read_packet())
-            .await
-            .context("查询 R08 智能触控状态失败")?;
-        tracing::info!("TOUCH_ARMED 已重新武装触控并请求戒指返回真实状态");
+    let firmware_touch_status =
+        match probe_reviewed_touch_firmware(&connection, &mut notifications).await {
+            Ok(status)
+                if matches!(
+                    status,
+                    IMU_TOUCH_V9_CAPABILITY_STATUS
+                        | IMU_TOUCH_V10_CAPABILITY_STATUS
+                        | IMU_TOUCH_V11_CAPABILITY_STATUS
+                ) =>
+            {
+                Some(status)
+            }
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(
+                "TOUCH_CAPABILITY_FALLBACK 未确认 v9-v11 A1 FC/FB/FA；保留旧固件主机保护：{error:#}"
+            );
+                None
+            }
+        };
+    let firmware_pointer_safe = firmware_touch_status.is_some();
+    let firmware_native_wheel = matches!(
+        firmware_touch_status,
+        Some(IMU_TOUCH_V10_CAPABILITY_STATUS | IMU_TOUCH_V11_CAPABILITY_STATUS)
+    );
+    if firmware_pointer_safe {
+        if !connection.supports_v9_touch_imu_combo() {
+            let backend = connection.backend_name();
+            let _ = connection.disconnect().await;
+            anyhow::bail!(
+                "v9-v11 触控滚轮只允许已验证的 Windows Win32 GATT 路径；当前后端={backend}"
+            );
+        }
+        if firmware_native_wheel {
+            tracing::info!(
+                backend = connection.backend_name(),
+                "R08_POINTER_SAFE_FIRMWARE v10/v11 仅保留原生 HID 滚轮；X/Y 与鼠标按钮已清零"
+            );
+        } else {
+            tracing::info!(
+                backend = connection.backend_name(),
+                "R08_POINTER_BLOCK_FIRMWARE v9 已在戒指端屏蔽 HID 鼠标报告；触控滑动只走 GATT"
+            );
+        }
+    } else {
+        match pointer_suppression.suppress_if_present() {
+            Ok(true) => {}
+            Ok(false) => tracing::info!(
+                "R08_POINTER_BLOCK_NOT_NEEDED Windows 当前没有 R08 HID 鼠标子设备；按 GATT-only 继续"
+            ),
+            Err(error) => {
+                let _ = connection.disconnect().await;
+                return Err(error).context("无法启用 R08 无光标移动保护；触控未开启");
+            }
+        }
+    }
+
+    let mut touch_enabled = false;
+    if options.touch_on_start && firmware_native_wheel && !options.inject {
+        let _ = connection.disconnect().await;
+        anyhow::bail!(
+            "v10/v11 原生滚轮会由 Windows 直接接收；监听模式未显式允许注入，因此不会开启触控"
+        );
+    }
+    if options.touch_on_start {
+        if let Err(error) = arm_touch(&connection, &mut notifications, &options).await {
+            let _ = set_touch_enabled(&connection, &options, false).await;
+            let _ = connection.disconnect().await;
+            let _ = pointer_suppression.restore();
+            return Err(error).context("开启 R08 智能触控失败");
+        }
+        touch_enabled = true;
     }
 
     let mut engine = MappingEngine::new(MappingConfig {
@@ -188,7 +309,7 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
                     break;
                 }
             }
-            packet = futures::StreamExt::next(&mut notifications) => {
+            packet = notifications.next() => {
                 let Some(packet) = packet else {
                     tracing::warn!("GATT 通知流结束");
                     break;
@@ -214,20 +335,42 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
                             &mut injector,
                             &mut inject_enabled,
                         );
-                        if !touch_enabled {
+                        if firmware_native_wheel && touch_enabled {
+                            match set_touch_enabled(&connection, &options, false).await {
+                                Ok(()) => touch_enabled = false,
+                                Err(error) => tracing::warn!("关闭 v10/v11 原生滚轮失败：{error}"),
+                            }
+                        } else if !firmware_native_wheel && !touch_enabled {
                             match set_touch_enabled(&connection, &options, true).await {
                                 Ok(()) => touch_enabled = true,
                                 Err(error) => tracing::warn!("开启触控失败：{error}"),
                             }
                         }
+                        if firmware_native_wheel {
+                            tracing::info!("LISTEN_ONLY v10/v11 原生滚轮已关闭，避免监听模式产生系统输入");
+                        }
                         print_status(touch_enabled, inject_enabled, &options);
                     }
                     MenuCommand::Control => {
-                        if !touch_enabled {
+                        if firmware_native_wheel && !inject_enabled {
+                            match enable_host_control(
+                                &mut engine,
+                                &mut injector,
+                                &mut inject_enabled,
+                            ) {
+                                Ok(()) => tracing::info!("CONTROL_READY 已明确允许 v10/v11 原生滚轮输入"),
+                                Err(error) => tracing::warn!("开启电脑控制失败：{error}"),
+                            }
+                        }
+                        if !touch_enabled && (!firmware_native_wheel || inject_enabled) {
                             match set_touch_enabled(&connection, &options, true).await {
                                 Ok(()) => touch_enabled = true,
                                 Err(error) => tracing::warn!("开启触控失败：{error}"),
                             }
+                        } else if firmware_native_wheel && !inject_enabled {
+                            tracing::warn!(
+                                "v10/v11 原生滚轮未开启：主机输入授权后端没有成功启动"
+                            );
                         }
                         if touch_enabled && !inject_enabled {
                             match enable_host_control(
@@ -249,6 +392,12 @@ pub async fn run(connection: RingConnection, options: SessionOptions) -> Result<
                             &mut injector,
                             &mut inject_enabled,
                         );
+                        if firmware_native_wheel && touch_enabled {
+                            match set_touch_enabled(&connection, &options, false).await {
+                                Ok(()) => touch_enabled = false,
+                                Err(error) => tracing::warn!("暂停时关闭 v10/v11 原生滚轮失败：{error}"),
+                            }
+                        }
                         tracing::info!("电脑控制已暂停；戒指触控监听保持不变");
                         print_status(touch_enabled, inject_enabled, &options);
                     }

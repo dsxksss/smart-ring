@@ -40,15 +40,21 @@ EXPECTED_STOCK_GIT_VERSION = 0x00001041  # 1.4.1 in T_IMAGE_VERSION layout
 BUMPED_GIT_VERSION = 0x00006041  # 1.4.6; newer than the activated v6 probe
 TOUCH_V8_GIT_VERSION = 0x00007041  # 1.4.7; newer than installed IMU v7
 TOUCH_V9_GIT_VERSION = 0x00008041  # 1.4.8; HID mouse reports blocked
+TOUCH_V10_GIT_VERSION = 0x00009041  # 1.4.9; touch Y motion becomes wheel only
+TOUCH_V11_GIT_VERSION = 0x00000051  # 1.5.0; contact-gated, slower wheel
 OUTER_FIRMWARE_OFFSET = 0x10
 EXPECTED_OUTER_FIRMWARE = b"RT08_3.10.48_260309"
 BUMPED_OUTER_FIRMWARE = b"RT08_3.10.51_260827"
 TOUCH_V8_OUTER_FIRMWARE = b"RT08_3.10.52_260827"
 TOUCH_V9_OUTER_FIRMWARE = b"RT08_3.10.53_260827"
+TOUCH_V10_OUTER_FIRMWARE = b"RT08_3.10.54_260828"
+TOUCH_V11_OUTER_FIRMWARE = b"RT08_3.10.55_260828"
 DEFAULT_STATUS_ADDRESS = 0x008280CA
 DEFAULT_STATUS_ORIGINAL = bytes.fromhex("ff 21")  # movs r1, #0xff
 DEFAULT_STATUS_MARKER = bytes.fromhex("fd 21")  # movs r1, #0xfd
 TOUCH_V9_STATUS_MARKER = bytes.fromhex("fc 21")  # movs r1, #0xfc
+TOUCH_V10_STATUS_MARKER = bytes.fromhex("fb 21")  # movs r1, #0xfb
+TOUCH_V11_STATUS_MARKER = bytes.fromhex("fa 21")  # movs r1, #0xfa
 TOUCH_INDICATOR_REPEAT_ADDRESS = 0x0082C604
 TOUCH_INDICATOR_REPEAT_ORIGINAL = bytes.fromhex("19 23")  # movs r3, #25
 MIN_TOUCH_INDICATOR_REPEAT = 1
@@ -58,6 +64,28 @@ HID_MOUSE_REPORT_FUNCTIONS = (
     (0x00829FAA, bytes.fromhex("1f b5"), bytes.fromhex("70 47")),
     (0x00829FD4, bytes.fromhex("1f b5"), bytes.fromhex("70 47")),
 )
+TOUCH_WHEEL_PATCH_ADDRESS = 0x00829FD6
+TOUCH_WHEEL_V10_PATCH_SIZE = 30
+TOUCH_WHEEL_V10_PATCH_SHA256 = (
+    "5275bf3c5afd6a0bdc538ad83bc8ce0ade342110871d04852f8ded129617fb20"
+)
+TOUCH_WHEEL_V11_PATCH_SIZE = 42
+TOUCH_WHEEL_V11_PATCH_SHA256 = (
+    "92bcd47df85a56a613a76c50ce6256dfe9deab36dd86b1d9d0615b3b23d09ec7"
+)
+# Backward-compatible names retained for the existing v10 regression tests.
+TOUCH_WHEEL_PATCH_SIZE = TOUCH_WHEEL_V10_PATCH_SIZE
+TOUCH_WHEEL_PATCH_SHA256 = TOUCH_WHEEL_V10_PATCH_SHA256
+TOUCH_WHEEL_PATCH_ORIGINAL = bytes.fromhex(
+    "27 4b 1b 78 00 2b 20 d0 00 28 01 d0 07 23 00 e0 "
+    "00 23 6c 46 23 72 06 23 63 72 a1 72 09 12 e1 72 "
+    "11 12 22 73 61 73 00 28 00 d0"
+)
+TOUCH_WHEEL_MOTION_HOOK_ADDRESS = 0x00829F7E
+TOUCH_WHEEL_MOTION_HOOK_ORIGINAL = bytes.fromhex("6c 46 20 72")
+TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS = 0x00829FD4
+TOUCH_WHEEL_EXTENDED_ENTRY_ORIGINAL = bytes.fromhex("1f b5")
+TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT = bytes.fromhex("70 47")
 EXPECTED_LITERAL_WORDS = (
     0x00209CB8,
     0x00209CC8,
@@ -120,6 +148,46 @@ def validate_patch_binary(patch: bytes) -> dict[str, Any]:
     }
 
 
+def validate_touch_wheel_patch_binary(
+    patch: bytes, revision_profile: str = "imu-touch-v10"
+) -> dict[str, Any]:
+    profiles = {
+        "imu-touch-v10": (
+            TOUCH_WHEEL_V10_PATCH_SIZE,
+            TOUCH_WHEEL_V10_PATCH_SHA256,
+            "signed-y-unit",
+        ),
+        "imu-touch-v11": (
+            TOUCH_WHEEL_V11_PATCH_SIZE,
+            TOUCH_WHEEL_V11_PATCH_SHA256,
+            "contact-gated-abs-y-16",
+        ),
+    }
+    try:
+        expected_size, expected_hash, behavior = profiles[revision_profile]
+    except KeyError as error:
+        raise ValueError("touch-wheel rewriting requires a reviewed v10/v11 profile") from error
+    if len(patch) != expected_size:
+        raise ValueError(
+            f"{revision_profile} touch-wheel patch must be exactly {expected_size} bytes"
+        )
+    patch_hash = sha256_hex(patch)
+    if patch_hash != expected_hash:
+        raise ValueError("touch-wheel patch SHA-256 differs from the reviewed build")
+    return {
+        "address": TOUCH_WHEEL_PATCH_ADDRESS,
+        "size": len(patch),
+        "sha256": patch_hash,
+        "instruction_reviewed_sha256": True,
+        "pointer_axes_forced_zero": True,
+        "mouse_buttons_forced_zero": True,
+        "behavior": behavior,
+        "signed_y_converted_to_unit_wheel": True,
+        "contact_flag_required": revision_profile == "imu-touch-v11",
+        "minimum_abs_y": 16 if revision_profile == "imu-touch-v11" else 1,
+    }
+
+
 def build_candidate(
     stock: bytes,
     patch: bytes,
@@ -131,6 +199,7 @@ def build_candidate(
     add_activation_marker: bool = False,
     touch_indicator_repeat: int | None = None,
     block_hid_mouse_reports: bool = False,
+    touch_wheel_patch: bytes | None = None,
     revision_profile: str = "imu-v7",
 ) -> tuple[bytes, dict[str, Any]]:
     load_image_bytes = bytearray(stock)
@@ -167,6 +236,18 @@ def build_candidate(
             "1.4.8",
             TOUCH_V9_STATUS_MARKER,
         ),
+        "imu-touch-v10": (
+            TOUCH_V10_GIT_VERSION,
+            TOUCH_V10_OUTER_FIRMWARE,
+            "1.4.9",
+            TOUCH_V10_STATUS_MARKER,
+        ),
+        "imu-touch-v11": (
+            TOUCH_V11_GIT_VERSION,
+            TOUCH_V11_OUTER_FIRMWARE,
+            "1.5.0",
+            TOUCH_V11_STATUS_MARKER,
+        ),
     }
     if revision_profile not in revision_profiles:
         raise ValueError(f"unknown revision profile: {revision_profile}")
@@ -178,6 +259,20 @@ def build_candidate(
     ) = revision_profiles[revision_profile]
     if block_hid_mouse_reports and revision_profile != "imu-touch-v9":
         raise ValueError("HID mouse report blocking requires the imu-touch-v9 profile")
+    wheel_profiles = ("imu-touch-v10", "imu-touch-v11")
+    if touch_wheel_patch is not None and revision_profile not in wheel_profiles:
+        raise ValueError(
+            "touch-wheel rewriting requires the imu-touch-v10 or imu-touch-v11 profile"
+        )
+    if revision_profile in wheel_profiles and touch_wheel_patch is None:
+        raise ValueError(f"{revision_profile} requires the reviewed touch-wheel patch")
+    if block_hid_mouse_reports and touch_wheel_patch is not None:
+        raise ValueError("HID mouse blocking and touch-wheel rewriting are mutually exclusive")
+    touch_wheel_validation = (
+        validate_touch_wheel_patch_binary(touch_wheel_patch, revision_profile)
+        if touch_wheel_patch is not None
+        else None
+    )
     if patch_validation["remaining"] < 0:
         raise ValueError("patch does not fit the conservative zero-run candidate")
 
@@ -258,6 +353,60 @@ def build_candidate(
                     f"stock HID mouse helper bytes do not match at 0x{address:08X}"
                 )
             load_image_bytes[offset : offset + len(replacement)] = replacement
+    if touch_wheel_patch is not None:
+        motion_hook_offset = address_to_file_offset(
+            TOUCH_WHEEL_MOTION_HOOK_ADDRESS, len(stock)
+        )
+        if (
+            stock[
+                motion_hook_offset : motion_hook_offset
+                + len(TOUCH_WHEEL_MOTION_HOOK_ORIGINAL)
+            ]
+            != TOUCH_WHEEL_MOTION_HOOK_ORIGINAL
+        ):
+            raise ValueError("stock touch-wheel motion hook bytes do not match")
+        motion_hook = encode_thumb_bl(
+            TOUCH_WHEEL_MOTION_HOOK_ADDRESS, TOUCH_WHEEL_PATCH_ADDRESS
+        )
+        first, second = struct.unpack("<HH", motion_hook)
+        if (
+            decode_thumb_bl(TOUCH_WHEEL_MOTION_HOOK_ADDRESS, first, second)
+            != TOUCH_WHEEL_PATCH_ADDRESS
+        ):
+            raise AssertionError("touch-wheel motion hook does not round-trip")
+
+        extended_entry_offset = address_to_file_offset(
+            TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS, len(stock)
+        )
+        if (
+            stock[
+                extended_entry_offset : extended_entry_offset
+                + len(TOUCH_WHEEL_EXTENDED_ENTRY_ORIGINAL)
+            ]
+            != TOUCH_WHEEL_EXTENDED_ENTRY_ORIGINAL
+        ):
+            raise ValueError("stock extended mouse-report entry bytes do not match")
+
+        wheel_patch_offset = address_to_file_offset(TOUCH_WHEEL_PATCH_ADDRESS, len(stock))
+        if (
+            stock[
+                wheel_patch_offset : wheel_patch_offset
+                + len(touch_wheel_patch)
+            ]
+            != TOUCH_WHEEL_PATCH_ORIGINAL[: len(touch_wheel_patch)]
+        ):
+            raise ValueError("stock touch-wheel patch region bytes do not match")
+
+        load_image_bytes[
+            motion_hook_offset : motion_hook_offset + len(motion_hook)
+        ] = motion_hook
+        load_image_bytes[
+            extended_entry_offset : extended_entry_offset
+            + len(TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT)
+        ] = TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT
+        load_image_bytes[
+            wheel_patch_offset : wheel_patch_offset + len(touch_wheel_patch)
+        ] = touch_wheel_patch
     payload = load_image_bytes[HEADER_SIZE:]
     struct.pack_into("<I", load_image_bytes, 12, sum(payload) & 0xFFFFFFFF)
 
@@ -295,6 +444,19 @@ def build_candidate(
         for address, _original, replacement in HID_MOUSE_REPORT_FUNCTIONS:
             offset = address_to_file_offset(address, len(stock))
             allowed_offsets.update(range(offset, offset + len(replacement)))
+    if touch_wheel_patch is not None:
+        allowed_offsets.update(
+            range(motion_hook_offset, motion_hook_offset + len(motion_hook))
+        )
+        allowed_offsets.update(
+            range(
+                extended_entry_offset,
+                extended_entry_offset + len(TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT),
+            )
+        )
+        allowed_offsets.update(
+            range(wheel_patch_offset, wheel_patch_offset + len(touch_wheel_patch))
+        )
     unexpected_offsets = changed_offsets - allowed_offsets
     if unexpected_offsets:
         first = min(unexpected_offsets)
@@ -396,6 +558,37 @@ def build_candidate(
             ]
             if block_hid_mouse_reports
             else []
+        )
+        + (
+            [
+                {
+                    "kind": "touch_wheel_motion_hook",
+                    "file_offset": motion_hook_offset,
+                    "address": TOUCH_WHEEL_MOTION_HOOK_ADDRESS,
+                    "length": len(motion_hook),
+                    "before": TOUCH_WHEEL_MOTION_HOOK_ORIGINAL.hex(" "),
+                    "after": motion_hook.hex(" "),
+                    "target": TOUCH_WHEEL_PATCH_ADDRESS,
+                },
+                {
+                    "kind": "extended_mouse_report_block",
+                    "file_offset": extended_entry_offset,
+                    "address": TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS,
+                    "length": len(TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT),
+                    "before": TOUCH_WHEEL_EXTENDED_ENTRY_ORIGINAL.hex(" "),
+                    "after": TOUCH_WHEEL_EXTENDED_ENTRY_REPLACEMENT.hex(" "),
+                },
+                {
+                    "kind": "touch_wheel_patch_object",
+                    "file_offset": wheel_patch_offset,
+                    "address": TOUCH_WHEEL_PATCH_ADDRESS,
+                    "length": len(touch_wheel_patch),
+                    "before": TOUCH_WHEEL_PATCH_ORIGINAL[: len(touch_wheel_patch)].hex(" "),
+                    "after_sha256": touch_wheel_validation["sha256"],
+                },
+            ]
+            if touch_wheel_patch is not None
+            else []
         ),
         "unplanned_differences": 0,
         "patch_validation": patch_validation,
@@ -431,6 +624,15 @@ def build_candidate(
                 f"0x{address:08X}" for address, _, _ in HID_MOUSE_REPORT_FUNCTIONS
             ],
             "keyboard_attribute_index_0x18_untouched": True,
+        },
+        "touch_wheel_rewrite": {
+            "enabled": touch_wheel_patch is not None,
+            "validation": touch_wheel_validation,
+            "stock_connection_guard_preserved": True,
+            "stock_attribute_index_4_sender_preserved": True,
+            "pointer_axes_forced_zero": touch_wheel_patch is not None,
+            "mouse_buttons_forced_zero": touch_wheel_patch is not None,
+            "extended_report_blocked": touch_wheel_patch is not None,
         },
         "touch_indicator": {
             "command": "0x50 0x55 0xAA",
@@ -486,8 +688,19 @@ def main() -> int:
         help="replace only the three reviewed HID mouse-report helpers with BX LR",
     )
     parser.add_argument(
+        "--touch-wheel-patch",
+        type=Path,
+        help="reviewed v10/v11 thunk that converts filtered touch Y motion to wheel-only HID",
+    )
+    parser.add_argument(
         "--revision-profile",
-        choices=("imu-v7", "imu-touch-v8", "imu-touch-v9"),
+        choices=(
+            "imu-v7",
+            "imu-touch-v8",
+            "imu-touch-v9",
+            "imu-touch-v10",
+            "imu-touch-v11",
+        ),
         default="imu-v7",
         help="version markers used when revision bump flags are enabled",
     )
@@ -501,6 +714,9 @@ def main() -> int:
         add_activation_marker=args.activation_marker,
         touch_indicator_repeat=args.touch_indicator_repeat,
         block_hid_mouse_reports=args.block_hid_mouse_reports,
+        touch_wheel_patch=(
+            args.touch_wheel_patch.read_bytes() if args.touch_wheel_patch else None
+        ),
         revision_profile=args.revision_profile,
     )
     if args.output:

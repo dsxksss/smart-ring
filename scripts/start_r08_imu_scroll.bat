@@ -16,14 +16,13 @@ if errorlevel 1 (
 )
 
 echo Close the phone ring app and turn off phone Bluetooth first.
-echo v9 uses the capacitive touch area for double-tap wake and blocks mouse reports in firmware.
-echo Older firmware falls back to host IMU double-knock detection.
-echo After IMU_CONTROL_AWAKE, keep the ring still for one second, then rotate it to scroll.
-echo While awake, touch double-tap copies and triple-tap pastes.
+echo v10/v11 use capacitive touch swipes for native wheel-only HID and never move the pointer.
+echo v11 filters calibration and release samples for slower, monotonic scrolling.
+echo Older firmware is rejected by touch-scroll-only mode.
 echo Press Enter or Ctrl+C to stop safely.
 echo.
 set "RUST_LOG=info"
-target\release\r08.exe imu-stream --acknowledge-unverified-candidate --inject --double-tap-wake --seconds 0 --gain 0.2 --full-speed 60
+target\release\r08.exe imu-stream --acknowledge-unverified-candidate --inject --double-tap-wake --touch-scroll-only --seconds 0 --gain 0.2 --full-speed 60
 echo.
 echo IMU scroll stopped. No controller remains running.
 echo Full log: %CD%\r08-control-latest.log

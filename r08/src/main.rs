@@ -71,6 +71,9 @@ enum Command {
         /// Keep the v7 IMU stream in standby and require two distinct knocks before enabling control for one minute.
         #[arg(long)]
         double_tap_wake: bool,
+        /// Keep the verified IMU stream as a v9-v11 connection watchdog; v10/v11 emit safe native wheel reports from touch swipes.
+        #[arg(long)]
+        touch_scroll_only: bool,
         #[arg(long, default_value_t = 60)]
         seconds: u64,
         /// Gravity rotation plane: xy, xz, or yz.
@@ -258,6 +261,7 @@ async fn main() -> Result<()> {
             acknowledge_unverified_candidate,
             inject,
             double_tap_wake,
+            touch_scroll_only,
             seconds,
             plane,
             invert,
@@ -270,6 +274,9 @@ async fn main() -> Result<()> {
                     "拒绝发送候选命令：必须显式添加 --acknowledge-unverified-candidate；此命令不刷固件，但仅适用于已验证安装候选固件的测试设备"
                 );
             }
+            if touch_scroll_only && !double_tap_wake {
+                anyhow::bail!("--touch-scroll-only 必须与 --double-tap-wake 一起使用");
+            }
             let config = ImuWheelConfig {
                 plane: plane.parse::<RotationPlane>()?,
                 invert,
@@ -280,7 +287,11 @@ async fn main() -> Result<()> {
             .validate()?;
             println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
             if double_tap_wake {
-                println!("组合模式不会刷写固件。检测到 v9 A1 FC 标记时使用电容触控区双击唤醒；旧固件保留主机 IMU 双敲兜底。");
+                if touch_scroll_only {
+                    println!("触控滚轮专用模式不会刷写固件：连接后首个 60 秒可直接滑动，休眠后双击触控区唤醒；转动戒指绝不注入滚轮。");
+                } else {
+                    println!("组合模式不会刷写固件。检测到 v9-v11 A1 FC/FB/FA 标记时使用电容触控区双击唤醒；旧固件保留主机 IMU 双敲兜底。");
+                }
             } else {
                 println!("该命令不会刷写固件；将发送候选 A1 09 启停命令，任何异常均急停。按 Enter 或 Ctrl+C 退出。");
             }
@@ -291,6 +302,7 @@ async fn main() -> Result<()> {
                     seconds,
                     inject,
                     double_tap_wake,
+                    touch_scroll_only,
                     config,
                 },
             )
@@ -500,6 +512,7 @@ mod tests {
             "--acknowledge-unverified-candidate",
             "--inject",
             "--double-tap-wake",
+            "--touch-scroll-only",
             "--seconds",
             "0",
             "--gain",
@@ -513,6 +526,7 @@ mod tests {
                 acknowledge_unverified_candidate,
                 inject,
                 double_tap_wake,
+                touch_scroll_only,
                 seconds,
                 gain,
                 full_speed,
@@ -521,6 +535,7 @@ mod tests {
                 assert!(acknowledge_unverified_candidate);
                 assert!(inject);
                 assert!(double_tap_wake);
+                assert!(touch_scroll_only);
                 assert_eq!(seconds, 0);
                 assert_eq!(gain, 0.2);
                 assert_eq!(full_speed, 60.0);

@@ -59,6 +59,38 @@ PROFILES = {
         "touch_indicator_repeat": 3,
         "hid_mouse_reports_blocked": True,
     },
+    "imu-touch-v10": {
+        "input_sha256": "7eb94863714b9baa61017838de61074e8eeea4d384ffb0f80b4e935344a1fded",
+        "old_digest": bytes.fromhex(
+            "3e143d383a69b749ed928345ac04d517d7aefb95ecc0f2f4eafbe9fd9b146f8f"
+        ),
+        "new_digest": bytes.fromhex(
+            "eb9ecc8a8ca60ceba14cbec0e1abb9465770c0e8548376d0e1f16ce5bd977548"
+        ),
+        "classification": "SDK_FINALIZED_IMU_TOUCH_V10_CANDIDATE",
+        "output_sha256": "6cd256de135ce4290794feebec808cdf4cea2e6fd9dfdd30e675a16fcb7927bb",
+        "activation_marker_status": "0xFB/0xFE",
+        "imu_patch_present": True,
+        "touch_indicator_repeat": 3,
+        "touch_wheel_rewritten": True,
+    },
+    "imu-touch-v11": {
+        "input_sha256": "dd495e46fc4a76d71ad683f842070619d90f8db4414e7bf63f0e338bb755b172",
+        "old_digest": bytes.fromhex(
+            "3e143d383a69b749ed928345ac04d517d7aefb95ecc0f2f4eafbe9fd9b146f8f"
+        ),
+        "new_digest": bytes.fromhex(
+            "be0ced2e6d3d05b9b4080fb84a29f698b11aff4357a2efa138c745bb606c660a"
+        ),
+        "classification": "SDK_FINALIZED_IMU_TOUCH_V11_CANDIDATE",
+        "output_sha256": "7b60058f5d4de8246834acf139b059009495e0dc9a811b5ff041ec33e3e00e0f",
+        "activation_marker_status": "0xFA/0xFE",
+        "imu_patch_present": True,
+        "touch_indicator_repeat": 3,
+        "touch_wheel_rewritten": True,
+        "contact_gated_wheel": True,
+        "minimum_abs_y": 16,
+    },
 }
 DEFAULT_PROFILE = PROFILES["imu-v7"]
 EXPECTED_INPUT_SHA256 = DEFAULT_PROFILE["input_sha256"]
@@ -163,6 +195,9 @@ def finalize_candidate(
         "hid_mouse_reports_blocked": selected.get(
             "hid_mouse_reports_blocked", False
         ),
+        "touch_wheel_rewritten": selected.get("touch_wheel_rewritten", False),
+        "contact_gated_wheel": selected.get("contact_gated_wheel", False),
+        "minimum_abs_y": selected.get("minimum_abs_y"),
         "flash_allowed": False,
     }
 

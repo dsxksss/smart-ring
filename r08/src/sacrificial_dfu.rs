@@ -8,25 +8,32 @@ use futures::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
 
 use crate::protocol::{
-    evaluate_imu_stream_packet, format_packet, imu_stream_start_packet, imu_stream_stop_packet,
-    ImuStreamEvaluation,
+    decode_firmware_capability_status, firmware_capability_probe_packet, format_packet,
+    IMU_TOUCH_V11_CAPABILITY_STATUS,
 };
 
 pub const EXPECTED_SHA256: &str =
-    "681dbb3e7a9112fc85b1d8e546717eb5052ae7a7138b117b6dfff75de7eba1f5";
+    "7b60058f5d4de8246834acf139b059009495e0dc9a811b5ff041ec33e3e00e0f";
 pub const EXPECTED_SIZE: usize = 146_812;
 pub const ACK_PHRASE: &str = "I_ACCEPT_PERMANENT_BRICK";
 const HEADER_SIZE: usize = 0x50;
 const INNER_HEADER_SIZE: usize = 0x400;
 const APPLICATION_BASE: u32 = 0x0082_6000;
-const OUTER_FIRMWARE: &[u8] = b"RT08_3.10.53_260827";
+const OUTER_FIRMWARE: &[u8] = b"RT08_3.10.55_260828";
 const DEFAULT_STATUS_ADDRESS: u32 = 0x0082_80CA;
 const TOUCH_REPEAT_ADDRESS: u32 = 0x0082_C604;
-const HID_MOUSE_REPORT_ENTRIES: [u32; 3] = [0x0082_9F74, 0x0082_9FAA, 0x0082_9FD4];
+const TOUCH_WHEEL_MOTION_HOOK_ADDRESS: u32 = 0x0082_9F7E;
+const TOUCH_WHEEL_PATCH_ADDRESS: u32 = 0x0082_9FD6;
+const TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS: u32 = 0x0082_9FD4;
+const TOUCH_WHEEL_PATCH: &[u8] = &[
+    0x01, 0x28, 0x0b, 0xd1, 0x10, 0x2a, 0x07, 0xda, 0x10, 0x24, 0x64, 0x42, 0xa2, 0x42, 0x00, 0xdd,
+    0x04, 0xe0, 0x01, 0x23, 0x5b, 0x42, 0x02, 0xe0, 0x01, 0x23, 0x00, 0xe0, 0x00, 0x23, 0x00, 0x20,
+    0x00, 0x21, 0x00, 0x22, 0x6c, 0x46, 0x20, 0x72, 0x70, 0x47,
+];
 const SDK_IMAGE_DIGEST_OFFSET: usize = HEADER_SIZE + 0x174;
 const SDK_IMAGE_DIGEST: &[u8] = &[
-    0x1b, 0xc5, 0x98, 0x20, 0x9c, 0x53, 0xb7, 0x48, 0x21, 0x8d, 0x65, 0x34, 0x6a, 0x20, 0xb8, 0x23,
-    0xee, 0x3d, 0xb0, 0xf0, 0xe7, 0x97, 0xee, 0x1b, 0xfb, 0xb9, 0x2d, 0xb6, 0xd6, 0x57, 0x01, 0x26,
+    0xbe, 0x0c, 0xed, 0x2e, 0x6d, 0x3d, 0x05, 0xb9, 0xb4, 0x08, 0x0f, 0xb8, 0x4a, 0x29, 0xf6, 0x98,
+    0xb1, 0x1a, 0xff, 0x43, 0x57, 0xa2, 0xef, 0xa1, 0x38, 0xc7, 0x45, 0xbb, 0x60, 0x6c, 0x66, 0x0a,
 ];
 
 #[derive(Debug, Clone)]
@@ -132,7 +139,7 @@ fn validate_container(bytes: &[u8]) -> Result<()> {
         bail!("candidate lacks exact RT08_V3.1 marker");
     }
     if &bytes[0x10..0x10 + OUTER_FIRMWARE.len()] != OUTER_FIRMWARE {
-        bail!("candidate outer firmware revision is not the reviewed v9 marker");
+        bail!("candidate outer firmware revision is not the reviewed v11 marker");
     }
     if payload[0] != 12 {
         bail!("candidate is not RTL8762E IC type 12");
@@ -150,8 +157,8 @@ fn validate_container(bytes: &[u8]) -> Result<()> {
     {
         bail!("RTL8762E inner length/base validation failed");
     }
-    if payload_u32(0x60) != 0x0000_8041 {
-        bail!("candidate internal version is not the reviewed 1.4.8 revision");
+    if payload_u32(0x60) != 0x0000_0051 {
+        bail!("candidate internal version is not the reviewed 1.5.0 revision");
     }
     if &bytes[SDK_IMAGE_DIGEST_OFFSET..SDK_IMAGE_DIGEST_OFFSET + SDK_IMAGE_DIGEST.len()]
         != SDK_IMAGE_DIGEST
@@ -159,18 +166,27 @@ fn validate_container(bytes: &[u8]) -> Result<()> {
         bail!("candidate lacks the official SDK-generated image digest");
     }
     let marker_offset = HEADER_SIZE + (DEFAULT_STATUS_ADDRESS - APPLICATION_BASE) as usize;
-    if bytes[marker_offset..marker_offset + 2] != [0xfc, 0x21] {
-        bail!("candidate lacks the independent v9 A1 FC capability marker");
+    if bytes[marker_offset..marker_offset + 2] != [0xfa, 0x21] {
+        bail!("candidate lacks the independent v11 A1 FA capability marker");
     }
     let touch_repeat_offset = HEADER_SIZE + (TOUCH_REPEAT_ADDRESS - APPLICATION_BASE) as usize;
     if bytes[touch_repeat_offset..touch_repeat_offset + 2] != [0x03, 0x23] {
         bail!("candidate lacks the reviewed three-repeat touch indicator patch");
     }
-    for address in HID_MOUSE_REPORT_ENTRIES {
-        let offset = HEADER_SIZE + (address - APPLICATION_BASE) as usize;
-        if bytes[offset..offset + 2] != [0x70, 0x47] {
-            bail!("candidate lacks HID mouse report block at 0x{address:08X}");
-        }
+    let motion_hook_offset =
+        HEADER_SIZE + (TOUCH_WHEEL_MOTION_HOOK_ADDRESS - APPLICATION_BASE) as usize;
+    if bytes[motion_hook_offset..motion_hook_offset + 4] != [0x00, 0xf0, 0x2a, 0xf8] {
+        bail!("candidate lacks the reviewed touch-wheel motion hook");
+    }
+    let extended_entry_offset =
+        HEADER_SIZE + (TOUCH_WHEEL_EXTENDED_ENTRY_ADDRESS - APPLICATION_BASE) as usize;
+    if bytes[extended_entry_offset..extended_entry_offset + 2] != [0x70, 0x47] {
+        bail!("candidate does not block the extended mouse report path");
+    }
+    let wheel_patch_offset = HEADER_SIZE + (TOUCH_WHEEL_PATCH_ADDRESS - APPLICATION_BASE) as usize;
+    if &bytes[wheel_patch_offset..wheel_patch_offset + TOUCH_WHEEL_PATCH.len()] != TOUCH_WHEEL_PATCH
+    {
+        bail!("candidate lacks the exact reviewed contact-gated touch-wheel rewrite");
     }
     Ok(())
 }
@@ -307,7 +323,9 @@ pub async fn probe_activation_marker() -> Result<Vec<u8>> {
     let connection =
         crate::platform::windows_gatt_win32::WindowsGattWin32Connection::connect_known().await?;
     let mut notifications = connection.subscribe().await?;
-    connection.write(&imu_stream_start_packet()).await?;
+    connection
+        .write(&firmware_capability_probe_packet())
+        .await?;
     let response_result = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let packet = notifications
@@ -315,21 +333,17 @@ pub async fn probe_activation_marker() -> Result<Vec<u8>> {
                 .await
                 .context("UART notification stream ended")?;
             println!("ACTIVATION_RX {}", format_packet(&packet));
-            if packet.first() == Some(&0xa1) && matches!(packet.get(1), Some(0xfc..=0xff)) {
-                return Ok::<_, anyhow::Error>(packet);
-            }
-            if matches!(
-                evaluate_imu_stream_packet(&packet, None),
-                ImuStreamEvaluation::Sample(_)
-            ) {
+            if let Some(status) = decode_firmware_capability_status(&packet) {
+                if status != IMU_TOUCH_V11_CAPABILITY_STATUS {
+                    bail!("unexpected activation marker 0x{status:02X}; expected v11 marker 0xFA");
+                }
                 return Ok::<_, anyhow::Error>(packet);
             }
         }
     })
     .await;
-    let _ = connection.write(&imu_stream_stop_packet()).await;
     let _ = connection.disconnect().await;
-    response_result.context("timeout waiting for A1 FD/FE/FF or valid A2/10 IMU packet")?
+    response_result.context("timeout waiting for exact v11 A1 FA activation marker")?
 }
 
 #[cfg(not(windows))]
