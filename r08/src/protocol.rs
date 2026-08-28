@@ -133,6 +133,44 @@ pub fn raw_sensor_start_packet() -> [u8; COLMI_PACKET_LEN] {
     build_colmi_packet(&[0xA1, 0x04, 0x04]).expect("raw start")
 }
 
+/// Request one snapshot of the stock firmware's five diagnostic channels.
+///
+/// Unlike [`raw_sensor_start_packet`], this does not enable the recurring
+/// optical/raw-sensor mode. The exact RT08_V3.1 firmware handles subcommand
+/// `0x03` by emitting one A1 01..05 snapshot; A1 04 contains the four touch
+/// controller channel readings.
+pub fn touch_electrode_snapshot_packet() -> [u8; COLMI_PACKET_LEN] {
+    build_colmi_packet(&[0xA1, 0x03]).expect("touch electrode snapshot")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchElectrodeSample {
+    pub channels: [u16; 4],
+    pub channels_valid: bool,
+}
+
+/// Decode the four touch-controller values returned in the stock A1 04
+/// diagnostic channel.
+///
+/// This packet proves four readable channels exist. Their physical upper/lower
+/// mapping and whether touch raises or lowers a value still require a real-ring
+/// baseline/hold comparison, so this decoder deliberately does not assign
+/// spatial labels.
+pub fn decode_touch_electrode_packet(data: &[u8]) -> Option<TouchElectrodeSample> {
+    if data.len() != COLMI_PACKET_LEN || !checksum_ok(data) || data[..2] != [0xA1, 0x04] {
+        return None;
+    }
+    Some(TouchElectrodeSample {
+        channels: [
+            u16::from_be_bytes([data[2], data[3]]),
+            u16::from_be_bytes([data[4], data[5]]),
+            u16::from_be_bytes([data[6], data[7]]),
+            u16::from_be_bytes([data[8], data[9]]),
+        ],
+        channels_valid: data[10] != 0,
+    })
+}
+
 pub fn uart_battery_query_packet() -> [u8; COLMI_PACKET_LEN] {
     build_colmi_packet(&[0x03]).expect("battery query")
 }
@@ -455,6 +493,18 @@ pub fn describe_colmi_packet(data: &[u8]) -> String {
                     sample.x, sample.y, sample.z
                 )
             }
+            0x04 => {
+                let sample = decode_touch_electrode_packet(data)
+                    .expect("validated A1 04 touch-electrode packet");
+                format!(
+                    "触控控制器四通道原始数据 C1={} C2={} C3={} C4={} VALID={}",
+                    sample.channels[0],
+                    sample.channels[1],
+                    sample.channels[2],
+                    sample.channels[3],
+                    sample.channels_valid
+                )
+            }
             channel => format!("传感器原始数据通道 0x{channel:02X}"),
         },
         _ => String::new(),
@@ -677,6 +727,39 @@ mod tests {
         packet[0] = 0xA1;
         packet[1] = 0x03;
         assert_eq!(decode_accelerometer_packet(&packet), None);
+    }
+
+    #[test]
+    fn builds_one_shot_touch_electrode_query_without_optical_start() {
+        let packet = touch_electrode_snapshot_packet();
+        assert_eq!(&packet[..3], &[0xA1, 0x03, 0x00]);
+        assert_ne!(packet, raw_sensor_start_packet());
+        assert_eq!(packet[15], 0xA4);
+    }
+
+    #[test]
+    fn decodes_touch_electrode_channels_without_inventing_spatial_labels() {
+        let packet = build_colmi_packet(&[
+            0xA1, 0x04, 0x03, 0xE8, 0x04, 0x4C, 0x12, 0x34, 0xAB, 0xCD, 0x01,
+        ])
+        .unwrap();
+        let sample = decode_touch_electrode_packet(&packet).unwrap();
+        assert_eq!(sample.channels, [1000, 1100, 0x1234, 0xABCD]);
+        assert!(sample.channels_valid);
+        let description = describe_colmi_packet(&packet);
+        assert!(description.contains("C1=1000"), "{description}");
+        assert!(description.contains("C4=43981"), "{description}");
+    }
+
+    #[test]
+    fn rejects_bad_touch_electrode_packets() {
+        let mut packet = build_colmi_packet(&[0xA1, 0x04, 0, 1, 0, 2, 0, 3, 0, 4, 1]).unwrap();
+        packet[15] ^= 1;
+        assert_eq!(decode_touch_electrode_packet(&packet), None);
+        assert_eq!(
+            decode_touch_electrode_packet(&touch_electrode_snapshot_packet()),
+            None
+        );
     }
 
     fn imu_stream_packet(

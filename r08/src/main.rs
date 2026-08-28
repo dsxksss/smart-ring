@@ -12,6 +12,7 @@ use r08::platform;
 use r08::protocol::{find_device_packet, parse_hex_payload, reject_if_dfu, NORDIC_UART_WRITE};
 use r08::sensor::{self, SensorRecordOptions};
 use r08::session::{self, SessionOptions};
+use r08::touch_raw::{self, TouchRawOptions};
 use tracing_subscriber::fmt::MakeWriter;
 
 #[derive(Parser)]
@@ -60,6 +61,13 @@ enum Command {
     },
     /// Send only the known A1 02 raw-sensor stop packet. Never sends DFU.
     SensorStop,
+    /// Observe four read-only touch-controller channels. Does not enable optical raw mode or inject input.
+    TouchRaw {
+        #[arg(long, default_value_t = 30)]
+        seconds: u64,
+        #[arg(long, default_value_t = 500)]
+        interval_ms: u64,
+    },
     /// Use the installed v7 A2/10 IMU stream. Does not flash firmware.
     ImuStream {
         /// Required acknowledgement; stock firmware does not implement A1 09.
@@ -255,6 +263,32 @@ async fn main() -> Result<()> {
             result?;
             disconnect_result?;
             println!("已发送 A1 02，原始传感器模式应已关闭");
+            Ok(())
+        }
+        Command::TouchRaw {
+            seconds,
+            interval_ms,
+        } => {
+            println!("正在查找并连接 {RING_NAME}，最多等待 30 秒……");
+            println!(
+                "只发送一次性 A1 03 诊断快照查询；不会发送 A1 04 04，不启动光学原始模式、滚轮或输入注入。"
+            );
+            println!(
+                "请依次观察未触摸、按住触控区上半部、按住触控区下半部时 C1～C4 的变化；当前不会臆测通道位置。"
+            );
+            let connection = ble::connect(30).await?;
+            let result = touch_raw::observe(
+                &connection,
+                TouchRawOptions {
+                    seconds,
+                    interval_ms,
+                },
+            )
+            .await;
+            let disconnect_result = connection.disconnect().await;
+            let sample_count = result?;
+            disconnect_result?;
+            println!("TOUCH_RAW_DONE samples={sample_count}");
             Ok(())
         }
         Command::ImuStream {
@@ -502,6 +536,18 @@ mod tests {
     fn connect_check_subcommand_is_available() {
         let cli = Cli::try_parse_from(["r08", "connect-check"]).unwrap();
         assert!(matches!(cli.command, Some(Command::ConnectCheck)));
+    }
+
+    #[test]
+    fn touch_raw_defaults_to_a_conservative_read_rate() {
+        let cli = Cli::try_parse_from(["r08", "touch-raw"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::TouchRaw {
+                seconds: 30,
+                interval_ms: 500
+            })
+        ));
     }
 
     #[test]

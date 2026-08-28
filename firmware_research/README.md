@@ -10,6 +10,8 @@ v10 保留普通 HID 属性 4 连接守卫和发送器，把触控队列的 sign
 
 v11 保留 v10 的安全输出边界，增加原厂合成队列 button=1 和 `abs(Y)>=16` 门控；两套竖滑轨迹离线均只输出同向 2 格。能力标记为 `A1 FA`，finalized SHA-256 为 `7b60058f5d4de8246834acf139b059009495e0dc9a811b5ff041ec33e3e00e0f`。当前接口不提供上下电极权重或静止按住坐标。见 `RT08_CUSTOM_FIRMWARE_V11_20260828.md`。
 
+后续已定位触控控制器四路只读快照：`0x00834A16` 从寄存器 `0x61/0x65/0x69/0x6D` 读取四个 16 位值，并由一次性 `A1 03` 查询返回 `A1 04`。物理上下映射、接触极性和松手阈值仍需真机对照采样。见 `RT08_TOUCH_RAW_CHANNELS_20260828.md`；当前没有 v12 候选或刷写授权。
+
 ## 精确身份与哈希
 
 设备：
@@ -131,6 +133,7 @@ v10 已授权并刷写，真机已确认触控滚动、方向、无光标和无�
 - `emulate_rt08_hid_mouse_block.py`：执行 v9 三个鼠标函数入口，确认直接返回且不触达 `server_send_data`，并确认键盘辅助函数未改。
 - `emulate_rt08_touch_wheel.py`：执行 v10 真实滚轮 thunk，确认 Y 符号映射为 `-1/0/+1` 且按钮/X/Y 恒为零。
 - `emulate_rt08_touch_wheel_v11_patch.py`：执行 v11 真实 42 字节 thunk 和两套原厂竖滑数组，确认只输出同向 2 格并抑制校准/松开/尾部样本。
+- `analyze_rt08_touch_driver.py`：锁定触控四通道读取函数、唯一调用者、四个寄存器立即数、A1 04 响应布局与二进制锚点。
 - `analyze_rt08_boot_activation.py`：OTA End、校验和 ready 链。
 - `inspect_r08_image.py`：容器、头结构和装载地址检查。
 - 对应的 `test_*.py`：防止地址、摘要、协议或 fail-closed 约束回退。

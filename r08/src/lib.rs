@@ -8,3 +8,4 @@ pub mod protocol;
 pub mod sacrificial_dfu;
 pub mod sensor;
 pub mod session;
+pub mod touch_raw;

@@ -63,6 +63,7 @@ cargo build -p r08 --release --bins
 | `r08 listen` | 监听触控通知，不注入 |
 | `r08 sensor-record` | 临时采集原厂低速传感器通道；会闪 LED，不发送 DFU |
 | `r08 sensor-stop` | 发送 `A1 02`，停止原始传感器与 LED |
+| `r08 touch-raw` | 只读观察触控控制器 C1～C4；不启用光学原始模式，不注入输入 |
 | `r08 touch-indicator-test` | 发送一次已知的 `50 55 AA` 触控区提示命令；v8 真机确认为 3 次 |
 | `r08 ota-fetch` | 从官方接口查询或下载精确匹配的原厂镜像，不连接戒指 |
 | `r08 disable-touch` | 关闭官方触控模式 |
@@ -88,6 +89,7 @@ cargo build -p r08 --release --bins
 - v10 SHA-256：`6cd256de135ce4290794feebec808cdf4cea2e6fd9dfdd30e675a16fcb7927bb`；触控滚动、方向正确、无光标移动和无点击已确认。已知问题是逐帧 Y 符号转换会造成偶发反向和偏快。
 - v11 指令级仿真确认两套原厂竖滑数组分别只输出 `[-1,-1]` 和 `[+1,+1]`，前导校准、小幅运动、松开和尾部样本均为 0；按钮、X、Y 恒为 0。当前应用接口不含上下电极权重或静止按住坐标，因此不能把这一版描述成真实上下半区 hold-to-scroll。
 - 下一阶段目标是按住触控区上半/下半持续慢速滚动并在松手时立即停止；这需要继续逆向触控控制器原始接触/区域接口，v11 的离散两格滑动不等同于该功能。
+- 已定位原厂触控控制器四路只读诊断值：一次性 `A1 03` 查询会返回 `A1 04`，其中 C1～C4 是寄存器 `0x61/0x65/0x69/0x6D` 的四个 16 位值。`r08 touch-raw` 可观察这些值；它不发送会开启光学原始模式的 `A1 04 04`，也不注入输入。四通道与触控区上下位置的物理映射仍须真机采样确认，不能凭编号猜测。
 - v7 固件 SHA-256：`575d500b385f61b6cc1cf8eb9d1a55b68da4ff49a0be32800f8f91f2d8a1ff2a`。
 - 固件持续输出约 9～10 Hz 的 `A2 10` IMU 通知。
 - 30 秒真机注入确认双向滚动、回正停止、8 秒续期和一次 BLE 空档后的安全恢复。
@@ -105,6 +107,7 @@ cargo build -p r08 --release --bins
 - 协议解析支持原厂 GATT `0x1D` 离散动作 `1/2/3`，但 v9 真机的应用类型 2 上下滑没有发出 `0x1D/2/3`；其实际输出来自 HID 鼠标运动队列。
 - 左右滑和长按没有稳定独立动作码，不能可靠映射光标、退格或撤销。
 - 原厂 `A1 04 04` 是光学/传感器原始模式，会让 LED 闪烁；它不是触控开关。
+- 触控四通道只读观察：`cargo run -p r08 --release --bin r08 -- touch-raw --seconds 30 --interval-ms 500`。运行时依次保持未触摸、按住触控区上半、按住触控区下半，并比较 C1～C4；该命令不会控制滚轮。
 - v7 的连续滚轮来自 LIS3DH 姿态流，不是更高分辨率的手指触摸坐标。
 
 ## 固件研究
@@ -118,6 +121,7 @@ cargo build -p r08 --release --bins
 - v10 触控滚轮改写与精确哈希：`firmware_research/RT08_CUSTOM_FIRMWARE_V10_20260828.md`
 - v10 30 字节滚轮补丁源码：`firmware_research/patches/r08_touch_wheel/`
 - v11 接触门控低速滚轮与精确哈希：`firmware_research/RT08_CUSTOM_FIRMWARE_V11_20260828.md`
+- 触控控制器四路只读路径：`firmware_research/RT08_TOUCH_RAW_CHANNELS_20260828.md`
 - v11 42 字节补丁源码：`firmware_research/patches/r08_touch_wheel_v11/`
 - 主机连续滚轮：`r08/src/imu_scroll.rs`
 - 哈希锁定 DFU：`r08/src/sacrificial_dfu.rs` 与 `r08/src/bin/r08_sacrificial_dfu.rs`
